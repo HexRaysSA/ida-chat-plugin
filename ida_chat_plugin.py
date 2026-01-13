@@ -391,7 +391,7 @@ class ChatMessage(QFrame):
             self.message_widget.setTextInteractionFlags(
                 Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
             )
-            self.message_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+            self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             layout.addStretch()
             self.message_widget.setStyleSheet(f"""
                 QLabel {{
@@ -418,7 +418,7 @@ class ChatMessage(QFrame):
                 Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
             )
             self.message_widget.setOpenExternalLinks(True)
-            self.message_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+            self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
             # Apply type-specific styling
             if self._msg_type == MessageType.TOOL_USE:
@@ -534,11 +534,6 @@ class ChatMessage(QFrame):
         else:
             self.message_widget.setText(markdown_to_html(text))
 
-    def update_max_width(self, container_width: int):
-        """Update max width to 80% of container width."""
-        max_width = int(container_width * 0.80)
-        self.message_widget.setMaximumWidth(max_width)
-
 
 class ChatHistoryWidget(QScrollArea):
     """Scrollable chat history container."""
@@ -568,8 +563,6 @@ class ChatHistoryWidget(QScrollArea):
                     msg_type: str = MessageType.TEXT) -> ChatMessage:
         """Add a message to the chat history."""
         message = ChatMessage(text, is_user, is_processing, msg_type)
-        # Set initial max width to 80% of container
-        message.update_max_width(self.viewport().width())
         self.layout.addWidget(message)
 
         # Track processing message
@@ -606,16 +599,6 @@ class ChatHistoryWidget(QScrollArea):
             item = self.layout.takeAt(1)  # Always take from index 1, leaving stretch at 0
             if item.widget():
                 item.widget().deleteLater()
-
-    def resizeEvent(self, event):
-        """Update message max widths when container is resized."""
-        super().resizeEvent(event)
-        new_width = self.viewport().width()
-        # Update all ChatMessage widgets
-        for i in range(self.layout.count()):
-            item = self.layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), ChatMessage):
-                item.widget().update_max_width(new_width)
 
 
 class ChatInputWidget(QPlainTextEdit):
