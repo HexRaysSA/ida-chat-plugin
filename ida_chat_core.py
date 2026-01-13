@@ -10,7 +10,10 @@ import re
 import sys
 from io import StringIO
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ida_chat_history import MessageHistory
 
 # Set up debug logging to file
 LOG_FILE = Path("/tmp/ida-chat.log")
@@ -111,6 +114,7 @@ class IDAChatCore:
         script_executor: Callable[[str], str] | None = None,
         verbose: bool = False,
         max_turns: int = 20,
+        history: "MessageHistory | None" = None,
     ):
         """Initialize the chat core.
 
@@ -122,11 +126,13 @@ class IDAChatCore:
                 executor that runs on the main thread.
             verbose: If True, report additional stats.
             max_turns: Maximum agentic turns before stopping (default 20).
+            history: Optional MessageHistory for persisting conversations.
         """
         self.db = db
         self.callback = callback
         self.verbose = verbose
         self.max_turns = max_turns
+        self.history = history
         self.client: ClaudeSDKClient | None = None
         self._cancelled = False
         # Use injected executor or default to direct execution
@@ -229,6 +235,14 @@ class IDAChatCore:
                             details = str(block.input)
                         self.callback.on_tool_use(block.name, details)
 
+                        # Log tool use to history
+                        if self.history:
+                            self.history.append_message(
+                                "tool_use",
+                                tool_name=block.name,
+                                details=details
+                            )
+
                     elif isinstance(block, TextBlock):
                         text = block.text
                         logger.debug(f"  TextBlock ({len(text)} chars): {text[:100]}...")
@@ -238,6 +252,9 @@ class IDAChatCore:
                         cleaned = IDASCRIPT_PATTERN.sub("", text).strip()
                         if cleaned:
                             self.callback.on_text(cleaned)
+                            # Log assistant text to history
+                            if self.history:
+                                self.history.append_message("assistant", cleaned)
                     else:
                         logger.warning(f"  Unknown block type: {type(block).__name__}")
 
@@ -260,6 +277,14 @@ class IDAChatCore:
                         script_outputs.append(output)
                         if output:
                             self.callback.on_script_output(output)
+
+                        # Log script execution to history
+                        if self.history:
+                            self.history.append_message(
+                                "script",
+                                code=code,
+                                output=output
+                            )
 
                 if self.verbose:
                     self.callback.on_result(
@@ -290,6 +315,10 @@ class IDAChatCore:
 
         logger.info("-" * 60)
         logger.info(f"USER MESSAGE: {user_input[:200]}...")
+
+        # Log user message to history
+        if self.history:
+            self.history.append_message("user", user_input)
 
         current_input = user_input
         all_script_outputs: list[str] = []

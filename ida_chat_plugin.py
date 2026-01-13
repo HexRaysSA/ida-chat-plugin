@@ -34,6 +34,7 @@ from PySide6.QtGui import QKeyEvent, QPalette, QFont
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
 from ida_chat_core import IDAChatCore, ChatCallback
+from ida_chat_history import MessageHistory
 
 
 # Plugin metadata
@@ -162,17 +163,22 @@ def markdown_to_html(text: str) -> str:
     """Convert markdown to HTML for display in QLabel with rich text."""
     import html
 
+    # Get theme-aware colors
+    colors = get_ida_colors()
+    code_bg = colors['dark']
+    code_fg = colors['text']
+
     # Escape HTML first
     text = html.escape(text)
 
     # Code blocks (``` ... ```) - must be before inline code
     def replace_code_block(match):
         code = match.group(1)
-        return f'<pre style="background-color: #2d2d2d; color: #f8f8f2; padding: 8px; border-radius: 4px; overflow-x: auto;"><code>{code}</code></pre>'
+        return f'<pre style="background-color: {code_bg}; color: {code_fg}; padding: 8px; border-radius: 4px; overflow-x: auto;"><code>{code}</code></pre>'
     text = re.sub(r'```(?:\w*\n)?(.*?)```', replace_code_block, text, flags=re.DOTALL)
 
     # Inline code (`code`)
-    text = re.sub(r'`([^`]+)`', r'<code style="background-color: #3d3d3d; padding: 2px 4px; border-radius: 3px;">\1</code>', text)
+    text = re.sub(r'`([^`]+)`', rf'<code style="background-color: {code_bg}; color: {code_fg}; padding: 2px 4px; border-radius: 3px;">\1</code>', text)
 
     # Headers
     text = re.sub(r'^### (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
@@ -223,8 +229,9 @@ class ProgressTimeline(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._stages: list[str] = []
-        self._current_stage = -1
+        self._script_count = 0
+        self._current_stage = ""
+        self._is_complete = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -244,22 +251,27 @@ class ProgressTimeline(QFrame):
 
     def reset(self):
         """Reset the timeline for a new conversation."""
-        self._stages = ["User"]
-        self._current_stage = 0
+        self._script_count = 0
+        self._current_stage = "User"
+        self._is_complete = False
         self._update_display()
         self.setVisible(True)
 
     def add_stage(self, name: str):
         """Add a new stage to the timeline."""
-        self._stages.append(name)
-        self._current_stage = len(self._stages) - 1
+        # Track scripts by parsing the number from "Script N"
+        if name.startswith("Script "):
+            try:
+                self._script_count = int(name.split()[1])
+            except (IndexError, ValueError):
+                pass
+        self._current_stage = name
         self._update_display()
 
     def complete(self):
         """Mark the timeline as complete."""
-        if "Done" not in self._stages:
-            self._stages.append("Done")
-        self._current_stage = len(self._stages) - 1
+        self._is_complete = True
+        self._current_stage = "Done"
         self._update_display()
 
     def hide_timeline(self):
@@ -267,15 +279,24 @@ class ProgressTimeline(QFrame):
         self.setVisible(False)
 
     def _update_display(self):
-        """Update the timeline display."""
+        """Update the timeline display with compact summary."""
         parts = []
-        for i, stage in enumerate(self._stages):
-            if i == self._current_stage:
-                parts.append(f"<b style='color: #f59e0b;'>{stage}</b>")
-            elif i < self._current_stage:
-                parts.append(f"<span style='color: #22c55e;'>✓ {stage}</span>")
+
+        # Always show User as complete
+        parts.append("<span style='color: #22c55e;'>✓ User</span>")
+
+        # Show script count if any
+        if self._script_count > 0:
+            if self._is_complete:
+                parts.append(f"<span style='color: #22c55e;'>✓ {self._script_count} scripts</span>")
             else:
-                parts.append(f"<span>{stage}</span>")
+                parts.append(f"<b style='color: #f59e0b;'>{self._script_count} scripts</b>")
+
+        # Show current stage (Thinking, Retrying, Done)
+        if self._is_complete:
+            parts.append("<span style='color: #22c55e;'>✓ Done</span>")
+        elif self._current_stage and self._current_stage not in ("User",) and not self._current_stage.startswith("Script"):
+            parts.append(f"<b style='color: #f59e0b;'>{self._current_stage}</b>")
 
         self.timeline_label.setText(" → ".join(parts))
 
@@ -519,19 +540,43 @@ class ChatHistoryWidget(QScrollArea):
 
 
 class ChatInputWidget(QPlainTextEdit):
-    """Multi-line text input with Enter to send functionality."""
+    """Multi-line text input with Enter to send and history navigation."""
 
     message_submitted = Signal(str)
+    cancel_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._history: list[str] = []
+        self._history_index = -1  # -1 means not browsing history
+        self._current_input = ""  # Stores current input when browsing history
         self._setup_ui()
+
+    def set_history(self, messages: list[str]):
+        """Set the message history for up/down navigation.
+
+        Args:
+            messages: List of previous user messages (oldest first).
+        """
+        self._history = messages
+        self._history_index = -1
+
+    def add_to_history(self, message: str):
+        """Add a message to the history.
+
+        Args:
+            message: The message to add.
+        """
+        # Don't add duplicates of the last message
+        if not self._history or self._history[-1] != message:
+            self._history.append(message)
+        self._history_index = -1
 
     def _setup_ui(self):
         """Set up the input widget UI."""
         colors = get_ida_colors()
 
-        self.setPlaceholderText("Type a message... (Enter to send, Shift+Enter for new line)")
+        self.setPlaceholderText("Type a message... (↑↓ history, Enter send, Esc cancel)")
         self.setMaximumHeight(100)
         self.setMinimumHeight(40)
         self.setStyleSheet(f"""
@@ -548,8 +593,17 @@ class ChatInputWidget(QPlainTextEdit):
         """)
 
     def keyPressEvent(self, event: QKeyEvent):
-        """Handle Enter key to submit message."""
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+        """Handle special keys: Enter, Escape, Up/Down for history."""
+        if event.key() == Qt.Key_Escape:
+            # Escape: cancel current operation
+            self.cancel_requested.emit()
+        elif event.key() == Qt.Key_Up:
+            # Up arrow: navigate to older history
+            self._navigate_history(-1)
+        elif event.key() == Qt.Key_Down:
+            # Down arrow: navigate to newer history
+            self._navigate_history(1)
+        elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             if event.modifiers() & Qt.ShiftModifier:
                 # Shift+Enter: insert new line
                 super().keyPressEvent(event)
@@ -557,10 +611,55 @@ class ChatInputWidget(QPlainTextEdit):
                 # Enter: submit message
                 text = self.toPlainText().strip()
                 if text:
+                    self.add_to_history(text)
                     self.message_submitted.emit(text)
                     self.clear()
+                    self._history_index = -1
         else:
             super().keyPressEvent(event)
+
+    def _navigate_history(self, direction: int):
+        """Navigate through message history.
+
+        Args:
+            direction: -1 for older (up), +1 for newer (down)
+        """
+        if not self._history:
+            return
+
+        # Save current input when starting to browse
+        if self._history_index == -1:
+            self._current_input = self.toPlainText()
+
+        # Calculate new index
+        if direction < 0:  # Up - go to older
+            if self._history_index == -1:
+                # Start browsing from the end (most recent)
+                new_index = len(self._history) - 1
+            else:
+                new_index = max(0, self._history_index - 1)
+        else:  # Down - go to newer
+            if self._history_index == -1:
+                # Already at current input, do nothing
+                return
+            new_index = self._history_index + 1
+            if new_index >= len(self._history):
+                # Return to current input
+                self._history_index = -1
+                self.setPlainText(self._current_input)
+                # Move cursor to end
+                cursor = self.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                self.setTextCursor(cursor)
+                return
+
+        # Set the history item
+        self._history_index = new_index
+        self.setPlainText(self._history[self._history_index])
+        # Move cursor to end
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.setTextCursor(cursor)
 
 
 class PluginCallback(ChatCallback):
@@ -620,10 +719,12 @@ class AgentSignals(QObject):
 class AgentWorker(QThread):
     """Background worker for running async agent calls."""
 
-    def __init__(self, db: Database, script_executor: Callable[[str], str], parent=None):
+    def __init__(self, db: Database, script_executor: Callable[[str], str],
+                 history: MessageHistory, parent=None):
         super().__init__(parent)
         self.db = db
         self.script_executor = script_executor
+        self.history = history
         self.signals = AgentSignals()
         self.callback = PluginCallback(self.signals)
         self.core: IDAChatCore | None = None
@@ -631,6 +732,7 @@ class AgentWorker(QThread):
         self._should_connect = False
         self._should_disconnect = False
         self._should_cancel = False
+        self._should_new_session = False
         self._running = True
 
     def request_connect(self):
@@ -649,6 +751,10 @@ class AgentWorker(QThread):
         self._should_cancel = True
         if self.core:
             self.core.request_cancel()
+
+    def request_new_session(self):
+        """Request starting a new session for history tracking."""
+        self._should_new_session = True
 
     def send_message(self, message: str):
         """Queue a message to be sent to the agent."""
@@ -672,10 +778,14 @@ class AgentWorker(QThread):
         if self._should_connect:
             self._should_connect = False
             try:
+                # Start initial session for history
+                self.history.start_new_session()
+
                 self.core = IDAChatCore(
                     self.db,
                     self.callback,
                     script_executor=self.script_executor,
+                    history=self.history,
                 )
                 await self.core.connect()
                 self.signals.connection_ready.emit()
@@ -685,6 +795,11 @@ class AgentWorker(QThread):
 
         # Process messages while running
         while self._running:
+            # Handle new session request (e.g., after Clear)
+            if self._should_new_session:
+                self._should_new_session = False
+                self.history.start_new_session()
+
             if self._pending_message:
                 message = self._pending_message
                 self._pending_message = None
@@ -755,7 +870,11 @@ class IDAChatForm(ida_kernwin.PluginForm):
         try:
             db = Database.open()
             script_executor = self._create_script_executor(db)
-            self.worker = AgentWorker(db, script_executor)
+
+            # Create message history for this binary
+            self.history = MessageHistory(db.path)
+
+            self.worker = AgentWorker(db, script_executor, self.history)
 
             # Connect signals
             self.worker.signals.connection_ready.connect(self._on_connection_ready)
@@ -780,6 +899,12 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called when agent connection is established."""
         self.chat_history.add_message("Agent connected and ready!", is_user=False)
         self.input_widget.setEnabled(True)
+        self.input_widget.setFocus()
+
+        # Load message history for up/down arrow navigation
+        if hasattr(self, 'history'):
+            user_messages = self.history.get_all_user_messages()
+            self.input_widget.set_history(user_messages)
 
     def _on_connection_error(self, error: str):
         """Called when agent connection fails."""
@@ -790,7 +915,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self._current_turn = turn
         self._max_turns = max_turns
         self.status_label.setText(f"Turn {turn}/{max_turns}")
-        self.cancel_btn.setVisible(True)
 
     def _on_thinking(self):
         """Called when agent starts processing."""
@@ -905,7 +1029,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called when agent finishes processing."""
         self._is_processing = False
         self.input_widget.setEnabled(True)
-        self.cancel_btn.setVisible(False)
         self.status_label.setText("Ready")
         self.progress_timeline.complete()
         # Mark the last message as complete (green)
@@ -994,28 +1117,11 @@ class IDAChatForm(ida_kernwin.PluginForm):
         input_layout.setContentsMargins(8, 8, 8, 8)
         input_layout.setSpacing(8)
 
-        # Text input (Enter to send)
+        # Text input (Enter to send, Escape to cancel)
         self.input_widget = ChatInputWidget()
         self.input_widget.message_submitted.connect(self._on_message_submitted)
+        self.input_widget.cancel_requested.connect(self._on_cancel)
         input_layout.addWidget(self.input_widget, stretch=1)
-
-        # Cancel button (hidden by default)
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #dc2626;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-            }}
-            QPushButton:hover {{
-                background-color: #b91c1c;
-            }}
-        """)
-        self.cancel_btn.clicked.connect(self._on_cancel)
-        self.cancel_btn.setVisible(False)
-        input_layout.addWidget(self.cancel_btn)
 
         layout.addWidget(input_container)
 
@@ -1091,7 +1197,15 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self._script_count = 0
         self.cost_label.setText("")
         self.progress_timeline.hide_timeline()
-        self._add_welcome_message()
+
+        # Start a new session for history tracking
+        if self.worker:
+            self.worker.request_new_session()
+
+        # Add ready message (agent already connected)
+        self.chat_history.add_message("Chat cleared. Ready for new conversation.", is_user=False)
+        self.input_widget.setEnabled(True)
+        self.input_widget.setFocus()
 
     def OnClose(self, form):
         """Called when the widget is closed."""
