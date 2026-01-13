@@ -1485,6 +1485,24 @@ class IDAChatForm(ida_kernwin.PluginForm):
         settings_btn.clicked.connect(self._show_settings)
         header_layout.addWidget(settings_btn)
 
+        # Share/export button
+        share_btn = QPushButton("↗")
+        share_btn.setFixedSize(28, 28)
+        share_btn.setToolTip("Export chat as HTML")
+        share_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {colors['mid']};
+                border: none;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                color: {colors['window_text']};
+            }}
+        """)
+        share_btn.clicked.connect(self._on_share)
+        header_layout.addWidget(share_btn)
+
         # Clear button
         clear_btn = QPushButton("Clear")
         clear_btn.setStyleSheet(f"""
@@ -1621,6 +1639,43 @@ class IDAChatForm(ida_kernwin.PluginForm):
             self.view_mode_btn.setText("Summary")
         else:
             self.view_mode_btn.setText("Detailed")
+
+    def _on_share(self):
+        """Export the current chat session as HTML."""
+        import claude_code_transcripts
+        from pathlib import Path
+
+        # Check if we have an active session
+        if not hasattr(self, 'history') or not self.history:
+            self.chat_history.add_message("No active session to export.", is_user=False)
+            return
+
+        session_file = self.history.session_file
+        if not session_file or not session_file.exists():
+            self.chat_history.add_message("No session file found to export.", is_user=False)
+            return
+
+        # Get the IDB path and create HTML output path
+        idb_path = Path(self.history.binary_path)
+        html_path = idb_path.with_suffix('.html')
+
+        try:
+            # Generate HTML to a temp directory first
+            import tempfile
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_output = Path(temp_dir)
+                claude_code_transcripts.generate_html(session_file, temp_output)
+
+                # Copy the index.html to the target location
+                index_file = temp_output / "index.html"
+                if index_file.exists():
+                    import shutil
+                    shutil.copy(index_file, html_path)
+                    self.chat_history.add_message(f"Chat exported to: {html_path}", is_user=False)
+                else:
+                    self.chat_history.add_message("Failed to generate HTML export.", is_user=False)
+        except Exception as e:
+            self.chat_history.add_message(f"Export failed: {e}", is_user=False)
 
     def _on_clear(self):
         """Clear the chat history."""
