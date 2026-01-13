@@ -44,14 +44,19 @@ jobs:
       - name: Install Python and dependencies
         run: |
           uv python install "${{ env.UV_PYTHON }}"
-          uv sync --extra dev
+          uv tool install python-semantic-release
+          uv tool install taskipy
 
       - name: Bump version
         id: version
         run: |
-          uv run task ${{ github.event.inputs.release_type }}
+          case "${{ github.event.inputs.release_type }}" in
+            release-patch) semantic-release version --patch --no-changelog ;;
+            release-minor) semantic-release version --minor --no-changelog ;;
+            release-major) semantic-release version --major --no-changelog ;;
+          esac
 
-          VERSION=$(uv run task current-version | tail -1)
+          VERSION=$(semantic-release version --print-last-released | tail -1)
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           echo "Created version: ${VERSION}"
