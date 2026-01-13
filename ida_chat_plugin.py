@@ -1210,10 +1210,12 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self._total_cost = 0.0
         self._script_count = 0
         self._last_had_error = False
-        self._summary_mode = False  # False = detailed, True = summary
+        self._message_count = 0
+        self._model_name = "Sonnet"  # Default Claude Code model
 
-        # Set larger minimum width for the panel
-        self.parent.setMinimumWidth(800)
+        # Allow horizontal resizing (IDA remembers preferred size)
+        self.parent.setMinimumWidth(600)
+        self.parent.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._create_ui()
 
@@ -1302,11 +1304,28 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.input_container.show()
         self._init_agent()
 
+    def _update_status_bar(self, processing_text: str | None = None):
+        """Update the status bar with current stats or processing text.
+
+        Args:
+            processing_text: If provided, show this instead of idle stats.
+        """
+        if processing_text:
+            self.status_label.setText(processing_text)
+        else:
+            # Idle state: show model, message count, and cost
+            parts = [self._model_name]
+            parts.append(f"{self._message_count} msgs")
+            if self._total_cost > 0:
+                parts.append(f"${self._total_cost:.4f}")
+            self.status_label.setText(" · ".join(parts))
+
     def _on_connection_ready(self):
         """Called when agent connection is established."""
         self.chat_history.add_message("Agent connected and ready!", is_user=False)
         self.input_widget.setEnabled(True)
         self.input_widget.setFocus()
+        self._update_status_bar()
 
         # Load message history for up/down arrow navigation
         if hasattr(self, 'history'):
@@ -1321,7 +1340,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called at the start of each agentic turn."""
         self._current_turn = turn
         self._max_turns = max_turns
-        self.status_label.setText(f"Turn {turn}/{max_turns}")
 
     def _on_thinking(self):
         """Called when agent starts processing."""
@@ -1369,9 +1387,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
 
     def _on_tool_use(self, tool_name: str, details: str):
         """Called when agent uses a tool."""
-        # Skip tool use messages in summary mode
-        if self._summary_mode:
-            return
         tool_msg = f"[{tool_name}]"
         if details:
             tool_msg += f" {details}"
@@ -1388,11 +1403,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
         # Update timeline
         self._script_count += 1
         self.progress_timeline.add_stage(f"Script {self._script_count}")
-        # Update status to show running script
-        self.status_label.setText(f"Turn {self._current_turn}/{self._max_turns} • Running script {self._script_count}...")
-        # Skip script code in summary mode
-        if self._summary_mode:
-            return
         # Show preview of the script
         lines = code.strip().split('\n')
         preview = '\n'.join(lines[:5])
@@ -1408,11 +1418,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
             is_error = output.strip().startswith("Script error:")
             if is_error:
                 self._last_had_error = True
-                # Always show errors, even in summary mode
                 self._add_processing_message(output, MessageType.ERROR)
-            elif self._summary_mode:
-                # Skip normal output in summary mode
-                return
             # Use collapsible section for long outputs
             elif CollapsibleSection.should_collapse(output):
                 # Mark previous message as complete
@@ -1427,17 +1433,17 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called when an error occurs."""
         self._add_processing_message(f"Error: {error}", MessageType.ERROR)
 
-    def _on_result(self, num_turns: int, cost: float):
+    def _on_result(self, _num_turns: int, cost: float):
         """Called when agent returns result with stats."""
         self._total_cost += cost
-        self.cost_label.setText(f"${self._total_cost:.4f}")
 
     def _on_finished(self):
         """Called when agent finishes processing."""
         self._is_processing = False
+        self._message_count += 1
         self.input_widget.setEnabled(True)
         self.input_widget.setFocus()
-        self.status_label.setText("Ready")
+        self._update_status_bar()
         self.progress_timeline.complete()
         # Mark the last message as complete (green)
         if self._current_message:
@@ -1456,6 +1462,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(10, 6, 10, 6)
+        header_layout.setSpacing(2)  # Tight spacing for icon buttons
 
         title = QLabel(PLUGIN_NAME)
         title.setStyleSheet(f"""
@@ -1467,11 +1474,8 @@ class IDAChatForm(ida_kernwin.PluginForm):
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        # Settings button (gear icon)
-        settings_btn = QPushButton("⚙")
-        settings_btn.setFixedSize(28, 28)
-        settings_btn.setToolTip("Settings")
-        settings_btn.setStyleSheet(f"""
+        # Icon button style (shared)
+        icon_btn_style = f"""
             QPushButton {{
                 background-color: transparent;
                 color: {colors['mid']};
@@ -1481,62 +1485,31 @@ class IDAChatForm(ida_kernwin.PluginForm):
             QPushButton:hover {{
                 color: {colors['window_text']};
             }}
-        """)
+        """
+
+        # Settings button (gear icon)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setFixedSize(24, 24)
+        settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet(icon_btn_style)
         settings_btn.clicked.connect(self._show_settings)
         header_layout.addWidget(settings_btn)
 
         # Share/export button
         share_btn = QPushButton("↗")
-        share_btn.setFixedSize(28, 28)
+        share_btn.setFixedSize(24, 24)
         share_btn.setToolTip("Export chat as HTML")
-        share_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {colors['mid']};
-                border: none;
-                font-size: 14px;
-            }}
-            QPushButton:hover {{
-                color: {colors['window_text']};
-            }}
-        """)
+        share_btn.setStyleSheet(icon_btn_style)
         share_btn.clicked.connect(self._on_share)
         header_layout.addWidget(share_btn)
 
         # Clear button
-        clear_btn = QPushButton("Clear")
-        clear_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {colors['mid']};
-                border: none;
-                padding: 4px 8px;
-            }}
-            QPushButton:hover {{
-                color: {colors['window_text']};
-            }}
-        """)
+        clear_btn = QPushButton("✕")
+        clear_btn.setFixedSize(24, 24)
+        clear_btn.setToolTip("Clear chat")
+        clear_btn.setStyleSheet(icon_btn_style)
         clear_btn.clicked.connect(self._on_clear)
         header_layout.addWidget(clear_btn)
-
-        # View mode toggle button
-        self.view_mode_btn = QPushButton("Detailed")
-        self.view_mode_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {colors['mid']};
-                border: 1px solid {colors['mid']};
-                border-radius: 4px;
-                padding: 2px 8px;
-                font-size: 10px;
-            }}
-            QPushButton:hover {{
-                color: {colors['window_text']};
-                border-color: {colors['window_text']};
-            }}
-        """)
-        self.view_mode_btn.clicked.connect(self._on_toggle_view_mode)
-        header_layout.addWidget(self.view_mode_btn)
 
         layout.addWidget(header)
 
@@ -1580,15 +1553,9 @@ class IDAChatForm(ida_kernwin.PluginForm):
         status_layout = QHBoxLayout(self.status_bar)
         status_layout.setContentsMargins(10, 4, 10, 4)
 
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("")
         self.status_label.setStyleSheet(f"color: {colors['mid']}; font-size: 11px;")
         status_layout.addWidget(self.status_label)
-
-        status_layout.addStretch()
-
-        self.cost_label = QLabel("")
-        self.cost_label.setStyleSheet(f"color: {colors['mid']}; font-size: 11px;")
-        status_layout.addWidget(self.cost_label)
 
         layout.addWidget(self.status_bar)
 
@@ -1630,15 +1597,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Cancel the current agent operation."""
         if self.worker and self._is_processing:
             self.worker.request_cancel()
-            self.status_label.setText("Cancelling...")
-
-    def _on_toggle_view_mode(self):
-        """Toggle between detailed and summary view modes."""
-        self._summary_mode = not self._summary_mode
-        if self._summary_mode:
-            self.view_mode_btn.setText("Summary")
-        else:
-            self.view_mode_btn.setText("Detailed")
 
     def _on_share(self):
         """Export the current chat session as HTML using claude-code-transcripts."""
@@ -1672,7 +1630,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.chat_history.clear_history()
         self._total_cost = 0.0
         self._script_count = 0
-        self.cost_label.setText("")
+        self._message_count = 0
         self.progress_timeline.hide_timeline()
 
         # Start a new session for history tracking
@@ -1683,6 +1641,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.chat_history.add_message("Chat cleared. Ready for new conversation.", is_user=False)
         self.input_widget.setEnabled(True)
         self.input_widget.setFocus()
+        self._update_status_bar()
 
     def OnClose(self, form):
         """Called when the widget is closed."""
