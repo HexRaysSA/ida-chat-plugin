@@ -4,7 +4,8 @@ IDA Chat History - Persistent message history storage.
 Stores conversation history in JSONL format compatible with Claude Code's approach.
 Each binary gets its own session directory, with individual session files.
 
-Format is compatible with claude-code-log for viewing transcripts.
+Format is compatible with simonw/claude-code-transcripts for viewing transcripts.
+See: https://github.com/simonw/claude-code-transcripts
 """
 
 import json
@@ -22,7 +23,7 @@ class MessageHistory:
         $HOME/.ida-chat/sessions/{encoded_binary_path}/{session-uuid}.jsonl
 
     Each line in a session file is a JSON object representing a message,
-    compatible with Claude Code's JSONL format for use with claude-code-log.
+    compatible with Claude Code's JSONL format for use with claude-code-transcripts.
     """
 
     BASE_DIR = Path.home() / ".ida-chat" / "sessions"
