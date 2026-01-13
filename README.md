@@ -2,7 +2,7 @@
 
 An AI-powered chat interface for IDA Pro using Claude Agent SDK. Ask questions about your binary and get intelligent analysis powered by Claude.
 
-![Setup Wizard](docs/screenshot_1.png)
+https://github.com/user-attachments/assets/4377116d-337e-451a-8b80-85245e7501ce
 
 ## Features
 
