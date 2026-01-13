@@ -76,6 +76,8 @@ jobs:
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
+          allowUpdates: true
+          omitBodyDuringUpdate: true
           tag: ${{ steps.version.outputs.tag }}
           makeLatest: true
           generateReleaseNotes: true
