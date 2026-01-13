@@ -434,7 +434,7 @@ class ChatMessage(QFrame):
                 """)
             elif self._msg_type == MessageType.SCRIPT:
                 # Script code - monospace, dark background
-                self.message_widget.setText(f"<pre style='margin: 0;'>{text}</pre>")
+                self.message_widget.setText(f"<pre style='margin: 0; white-space: pre-wrap; word-wrap: break-word;'>{text}</pre>")
                 self.message_widget.setStyleSheet(f"""
                     QLabel {{
                         background-color: #1e1e1e;
@@ -447,7 +447,7 @@ class ChatMessage(QFrame):
                 """)
             elif self._msg_type == MessageType.OUTPUT:
                 # Script output - monospace, gray background
-                self.message_widget.setText(f"<pre style='margin: 0;'>{text}</pre>")
+                self.message_widget.setText(f"<pre style='margin: 0; white-space: pre-wrap; word-wrap: break-word;'>{text}</pre>")
                 self.message_widget.setStyleSheet(f"""
                     QLabel {{
                         background-color: #2d2d2d;
