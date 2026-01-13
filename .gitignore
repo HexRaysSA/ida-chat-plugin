@@ -1,6 +1,10 @@
 # Build artifacts
 *.zip
 
+# IDA databases (test files)
+*.i64
+*.idb
+
 # Python
 __pycache__/
 *.py[cod]
