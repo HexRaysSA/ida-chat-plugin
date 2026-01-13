@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QApplication,
 )
-from PySide6.QtCore import Qt, Signal, QThread, QObject
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
 from PySide6.QtGui import QKeyEvent, QPalette
 
 # Ensure local modules are importable
@@ -72,11 +72,15 @@ def get_ida_colors():
 
 
 class ChatMessage(QFrame):
-    """A single chat message bubble."""
+    """A single chat message bubble with optional status indicator."""
 
-    def __init__(self, text: str, is_user: bool = True, parent=None):
+    def __init__(self, text: str, is_user: bool = True, is_processing: bool = False, parent=None):
         super().__init__(parent)
         self.is_user = is_user
+        self._is_processing = is_processing
+        self._blink_visible = True
+        self._blink_timer = None
+        self._status_indicator = None
         self._setup_ui(text)
 
     def _setup_ui(self, text: str):
@@ -87,17 +91,17 @@ class ChatMessage(QFrame):
         layout.setContentsMargins(8, 4, 8, 4)
 
         # Create message label
-        message_widget = QLabel(text)
-        message_widget.setWordWrap(True)
-        message_widget.setTextInteractionFlags(
+        self.message_widget = QLabel(text)
+        self.message_widget.setWordWrap(True)
+        self.message_widget.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
         )
-        message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         if self.is_user:
             # User message - right aligned, accent color background
             layout.addStretch()
-            message_widget.setStyleSheet(f"""
+            self.message_widget.setStyleSheet(f"""
                 QLabel {{
                     background-color: {colors['highlight']};
                     color: {colors['highlight_text']};
@@ -105,10 +109,17 @@ class ChatMessage(QFrame):
                     padding: 8px 12px;
                 }}
             """)
-            layout.addWidget(message_widget)
+            layout.addWidget(self.message_widget)
         else:
+            # Status indicator for assistant messages (small dot)
+            self._status_indicator = QLabel("●")
+            self._status_indicator.setFixedWidth(16)
+            self._status_indicator.setAlignment(Qt.AlignCenter)
+            self._update_indicator_style()
+            layout.addWidget(self._status_indicator)
+
             # Assistant message - left aligned, alternate base color
-            message_widget.setStyleSheet(f"""
+            self.message_widget.setStyleSheet(f"""
                 QLabel {{
                     background-color: {colors['alt_base']};
                     color: {colors['text']};
@@ -116,8 +127,54 @@ class ChatMessage(QFrame):
                     padding: 8px 12px;
                 }}
             """)
-            layout.addWidget(message_widget)
+            layout.addWidget(self.message_widget)
             layout.addStretch()
+
+            # Start blinking if processing
+            if self._is_processing:
+                self._start_blinking()
+
+    def _update_indicator_style(self):
+        """Update the status indicator color."""
+        if not self._status_indicator:
+            return
+        if self._is_processing:
+            # Yellow/orange for processing, blink visibility
+            color = "#f59e0b" if self._blink_visible else "transparent"
+        else:
+            # Green for complete
+            color = "#22c55e"
+        self._status_indicator.setStyleSheet(f"QLabel {{ color: {color}; font-size: 10px; }}")
+
+    def _start_blinking(self):
+        """Start the blinking animation."""
+        if self._blink_timer:
+            return
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._toggle_blink)
+        self._blink_timer.start(500)  # Blink every 500ms
+
+    def _stop_blinking(self):
+        """Stop the blinking animation."""
+        if self._blink_timer:
+            self._blink_timer.stop()
+            self._blink_timer = None
+        self._blink_visible = True
+
+    def _toggle_blink(self):
+        """Toggle blink visibility."""
+        self._blink_visible = not self._blink_visible
+        self._update_indicator_style()
+
+    def set_complete(self):
+        """Mark this message as complete (green indicator)."""
+        self._is_processing = False
+        self._stop_blinking()
+        self._update_indicator_style()
+
+    def update_text(self, text: str):
+        """Update the message text."""
+        self.message_widget.setText(text)
 
 
 class ChatHistoryWidget(QScrollArea):
@@ -125,12 +182,11 @@ class ChatHistoryWidget(QScrollArea):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._current_processing_message: ChatMessage | None = None
         self._setup_ui()
 
     def _setup_ui(self):
         """Set up the chat history UI."""
-        colors = get_ida_colors()
-
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -141,38 +197,40 @@ class ChatHistoryWidget(QScrollArea):
         self.layout = QVBoxLayout(self.container)
         self.layout.setSpacing(8)
         self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.addStretch()  # Push messages to top initially
+        self.layout.addStretch(1)  # Stretch at top pushes messages to bottom
 
         self.setWidget(self.container)
 
-    def add_message(self, text: str, is_user: bool = True):
+    def add_message(self, text: str, is_user: bool = True, is_processing: bool = False) -> ChatMessage:
         """Add a message to the chat history."""
-        # Remove the stretch before adding
-        self.layout.takeAt(self.layout.count() - 1)
-
-        # Add the message
-        message = ChatMessage(text, is_user)
+        message = ChatMessage(text, is_user, is_processing)
         self.layout.addWidget(message)
 
-        # Re-add stretch at the end
-        self.layout.addStretch()
+        # Track processing message
+        if is_processing:
+            self._current_processing_message = message
 
-        # Scroll to bottom
         self.scroll_to_bottom()
+        return message
+
+    def mark_current_complete(self):
+        """Mark the current processing message as complete."""
+        if self._current_processing_message:
+            self._current_processing_message.set_complete()
+            self._current_processing_message = None
 
     def scroll_to_bottom(self):
         """Scroll the chat history to the bottom."""
-        # Use a slight delay to ensure layout is updated
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(10, lambda: self.verticalScrollBar().setValue(
             self.verticalScrollBar().maximum()
         ))
 
     def clear_history(self):
         """Clear all messages from the chat history."""
-        # Remove all widgets except the stretch
+        self._current_processing_message = None
+        # Remove all widgets except the stretch at index 0
         while self.layout.count() > 1:
-            item = self.layout.takeAt(0)
+            item = self.layout.takeAt(1)  # Always take from index 1, leaving stretch at 0
             if item.widget():
                 item.widget().deleteLater()
 
@@ -231,6 +289,9 @@ class PluginCallback(ChatCallback):
     def __init__(self, signals: "AgentSignals"):
         self.signals = signals
 
+    def on_turn_start(self, turn: int, max_turns: int) -> None:
+        self.signals.turn_start.emit(turn, max_turns)
+
     def on_thinking(self) -> None:
         self.signals.thinking.emit()
 
@@ -243,8 +304,8 @@ class PluginCallback(ChatCallback):
     def on_text(self, text: str) -> None:
         self.signals.text.emit(text)
 
-    def on_script_start(self) -> None:
-        self.signals.script_start.emit()
+    def on_script_code(self, code: str) -> None:
+        self.signals.script_code.emit(code)
 
     def on_script_output(self, output: str) -> None:
         self.signals.script_output.emit(output)
@@ -259,11 +320,12 @@ class PluginCallback(ChatCallback):
 class AgentSignals(QObject):
     """Qt signals for agent callbacks."""
 
+    turn_start = Signal(int, int)
     thinking = Signal()
     thinking_done = Signal()
     tool_use = Signal(str, str)
     text = Signal(str)
-    script_start = Signal()
+    script_code = Signal(str)
     script_output = Signal(str)
     error = Signal(str)
     result = Signal(int, float)
@@ -362,6 +424,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.parent = self.FormToPyQtWidget(form)
         self.worker: AgentWorker | None = None
         self._is_processing = False
+        self._current_message = None  # Track current blinking message
         self._create_ui()
         self._init_agent()
 
@@ -401,11 +464,12 @@ class IDAChatForm(ida_kernwin.PluginForm):
             # Connect signals
             self.worker.signals.connection_ready.connect(self._on_connection_ready)
             self.worker.signals.connection_error.connect(self._on_connection_error)
+            self.worker.signals.turn_start.connect(self._on_turn_start)
             self.worker.signals.thinking.connect(self._on_thinking)
             self.worker.signals.thinking_done.connect(self._on_thinking_done)
             self.worker.signals.tool_use.connect(self._on_tool_use)
             self.worker.signals.text.connect(self._on_text)
-            self.worker.signals.script_start.connect(self._on_script_start)
+            self.worker.signals.script_code.connect(self._on_script_code)
             self.worker.signals.script_output.connect(self._on_script_output)
             self.worker.signals.error.connect(self._on_error)
             self.worker.signals.finished.connect(self._on_finished)
@@ -424,49 +488,75 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called when agent connection fails."""
         self.chat_history.add_message(f"Connection error: {error}", is_user=False)
 
+    def _on_turn_start(self, turn: int, max_turns: int):
+        """Called at the start of each agentic turn."""
+        pass  # Don't display turn info in UI
+
     def _on_thinking(self):
         """Called when agent starts processing."""
         self._is_processing = True
+        # Mark previous message as complete before starting new turn
+        if self._current_message:
+            self._current_message.set_complete()
         self.input_widget.setEnabled(False)
-        self.chat_history.add_message("[Thinking...]", is_user=False)
+        # Add thinking message with blinking indicator
+        self._current_message = self.chat_history.add_message("[Thinking...]", is_user=False, is_processing=True)
 
     def _on_thinking_done(self):
         """Called when agent produces first output."""
-        # Remove the thinking message
+        # Remove the thinking message (last widget in layout, stretch is at index 0)
         if self.chat_history.layout.count() > 1:
-            item = self.chat_history.layout.takeAt(self.chat_history.layout.count() - 2)
+            item = self.chat_history.layout.takeAt(self.chat_history.layout.count() - 1)
             if item and item.widget():
                 item.widget().deleteLater()
+        self._current_message = None
+
+    def _add_processing_message(self, text: str) -> None:
+        """Add a new processing message, marking previous one as complete."""
+        # Mark previous message as complete (green)
+        if self._current_message:
+            self._current_message.set_complete()
+        # Add new blinking message
+        self._current_message = self.chat_history.add_message(text, is_user=False, is_processing=True)
 
     def _on_tool_use(self, tool_name: str, details: str):
         """Called when agent uses a tool."""
         tool_msg = f"[{tool_name}]"
         if details:
             tool_msg += f" {details}"
-        self.chat_history.add_message(tool_msg, is_user=False)
+        self._add_processing_message(tool_msg)
 
     def _on_text(self, text: str):
         """Called when agent outputs text."""
         if text.strip():
-            self.chat_history.add_message(text, is_user=False)
+            self._add_processing_message(text)
 
-    def _on_script_start(self):
-        """Called before executing a script."""
-        self.chat_history.add_message("[Executing script...]", is_user=False)
+    def _on_script_code(self, code: str):
+        """Called with script code before execution."""
+        # Show preview of the script
+        lines = code.strip().split('\n')
+        preview = '\n'.join(lines[:5])
+        if len(lines) > 5:
+            preview += f"\n... ({len(lines) - 5} more lines)"
+        self._add_processing_message(f"[Executing script]\n{preview}")
 
     def _on_script_output(self, output: str):
         """Called with script output."""
         if output.strip():
-            self.chat_history.add_message(output, is_user=False)
+            self._add_processing_message(output)
 
     def _on_error(self, error: str):
         """Called when an error occurs."""
-        self.chat_history.add_message(f"Error: {error}", is_user=False)
+        self._add_processing_message(f"Error: {error}")
 
     def _on_finished(self):
         """Called when agent finishes processing."""
         self._is_processing = False
         self.input_widget.setEnabled(True)
+        # Mark the last message as complete (green)
+        if self._current_message:
+            self._current_message.set_complete()
+            self._current_message = None
 
     def _create_ui(self):
         """Create the chat interface UI."""
@@ -526,28 +616,10 @@ class IDAChatForm(ida_kernwin.PluginForm):
         input_layout.setContentsMargins(8, 8, 8, 8)
         input_layout.setSpacing(8)
 
-        # Text input
+        # Text input (Enter to send)
         self.input_widget = ChatInputWidget()
         self.input_widget.message_submitted.connect(self._on_message_submitted)
         input_layout.addWidget(self.input_widget, stretch=1)
-
-        # Send button
-        send_btn = QPushButton("Send")
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {colors['highlight']};
-                color: {colors['highlight_text']};
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['dark']};
-            }}
-        """)
-        send_btn.clicked.connect(self._on_send_clicked)
-        input_layout.addWidget(send_btn)
 
         layout.addWidget(input_container)
 
@@ -568,13 +640,6 @@ class IDAChatForm(ida_kernwin.PluginForm):
     def _on_message_submitted(self, text: str):
         """Handle message submission from input widget."""
         self._send_message(text)
-
-    def _on_send_clicked(self):
-        """Handle send button click."""
-        text = self.input_widget.toPlainText().strip()
-        if text:
-            self._send_message(text)
-            self.input_widget.clear()
 
     def _send_message(self, text: str):
         """Send a message to the agent."""

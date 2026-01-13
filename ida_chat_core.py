@@ -5,11 +5,23 @@ This module contains the common Agent SDK integration, script execution,
 and message processing used by both the CLI and IDA plugin.
 """
 
+import logging
 import re
 import sys
 from io import StringIO
 from pathlib import Path
 from typing import Callable, Protocol
+
+# Set up debug logging to file
+LOG_FILE = Path("/tmp/ida-chat.log")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, mode="a"),
+    ]
+)
+logger = logging.getLogger("ida-chat")
 
 from claude_agent_sdk import (
     ClaudeSDKClient,
@@ -21,38 +33,23 @@ from claude_agent_sdk import (
 )
 
 
-# Path to ida-domain skill directory for loading skills
-IDA_DOMAIN_SKILL_DIR = (
-    Path.home()
-    / ".claude/plugins/cache/ida-claude-plugins/ida-domain/1.0.0/skills/ida-domain-scripting"
-)
+# Project directory for agent SDK (plugin install directory)
+PROJECT_DIR = Path(__file__).parent.resolve()
 
 # Regex to extract <idascript>...</idascript> blocks
 IDASCRIPT_PATTERN = re.compile(r"<idascript>(.*?)</idascript>", re.DOTALL)
 
-# System prompt addition for the agent
-SYSTEM_PROMPT_APPEND = """
-You have access to an open IDA database via the `db` variable.
-When you need to query or analyze the binary, output Python code in <idascript> tags.
-The code will be exec()'d with `db` in scope. Use print() for output.
+# Prompt file location (relative to plugin directory, not work dir)
+PROMPT_FILE = Path(__file__).parent.resolve() / "PROMPT.md"
 
-IMPORTANT: This is an agentic loop. After each <idascript> executes:
-- You will see the output (or any errors) in the next message
-- If there's an error, fix your code and try again
-- Keep working until your task is complete
-- When you're done, respond WITHOUT any <idascript> tags
 
-Example:
-<idascript>
-for i, func in enumerate(db.functions):
-    if i >= 10:
-        break
-    name = db.functions.get_name(func)
-    print(f"{name}: 0x{func.start_ea:08X}")
-</idascript>
-
-Always wrap analysis code in <idascript> tags. The output from print() will be shown to you and the user.
-"""
+def _load_system_prompt() -> str:
+    """Load the system prompt from PROMPT.md."""
+    if PROMPT_FILE.exists():
+        return PROMPT_FILE.read_text()
+    # Fallback if file not found
+    logger.warning(f"PROMPT.md not found at {PROMPT_FILE}")
+    return "You have access to an open IDA database via the `db` variable. Use <idascript> tags for code."
 
 
 class ChatCallback(Protocol):
@@ -61,6 +58,10 @@ class ChatCallback(Protocol):
     Implementations of this protocol handle the presentation layer,
     whether that's terminal output (CLI) or Qt widgets (Plugin).
     """
+
+    def on_turn_start(self, turn: int, max_turns: int) -> None:
+        """Called at the start of each agentic turn."""
+        ...
 
     def on_thinking(self) -> None:
         """Called when the agent starts processing."""
@@ -71,15 +72,15 @@ class ChatCallback(Protocol):
         ...
 
     def on_tool_use(self, tool_name: str, details: str) -> None:
-        """Called when the agent uses a tool."""
+        """Called when the agent uses a tool (Read, Glob, Grep, Skill)."""
         ...
 
     def on_text(self, text: str) -> None:
         """Called when the agent outputs text (excluding idascript blocks)."""
         ...
 
-    def on_script_start(self) -> None:
-        """Called before executing an idascript."""
+    def on_script_code(self, code: str) -> None:
+        """Called with the script code before execution."""
         ...
 
     def on_script_output(self, output: str) -> None:
@@ -132,20 +133,25 @@ class IDAChatCore:
 
     async def connect(self) -> None:
         """Initialize and connect the Agent SDK client."""
+        logger.info("=" * 60)
+        logger.info("Connecting to Claude Agent SDK")
+        logger.info(f"CWD: {PROJECT_DIR}")
+
         options = ClaudeAgentOptions(
-            cwd=str(IDA_DOMAIN_SKILL_DIR),
+            cwd=str(PROJECT_DIR),
             setting_sources=["project"],
-            allowed_tools=["Read", "Glob", "Grep"],
+            allowed_tools=["Read", "Glob", "Grep", "Task"],
             permission_mode="bypassPermissions",
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": SYSTEM_PROMPT_APPEND,
+                "append": _load_system_prompt(),
             },
         )
 
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
+        logger.info("Connected successfully")
 
     async def disconnect(self) -> None:
         """Disconnect the Agent SDK client."""
@@ -185,15 +191,23 @@ class IDAChatCore:
         first_output = True
 
         async for message in self.client.receive_response():
+            logger.debug(f"Received message type: {type(message).__name__}")
+
             if isinstance(message, AssistantMessage):
-                for block in message.content:
+                logger.debug(f"AssistantMessage with {len(message.content)} blocks")
+                for i, block in enumerate(message.content):
+                    logger.debug(f"  Block {i}: {type(block).__name__}")
+
                     # Notify thinking done on first output
                     if first_output:
                         self.callback.on_thinking_done()
                         first_output = False
 
                     if isinstance(block, ToolUseBlock):
-                        # Extract tool details
+                        logger.info(f"TOOL USE: {block.name}")
+                        logger.debug(f"  Tool input: {block.input}")
+
+                        # Extract tool details based on tool type
                         details = ""
                         if block.name == "Read":
                             details = block.input.get("file_path", "")
@@ -201,27 +215,42 @@ class IDAChatCore:
                             details = block.input.get("pattern", "")
                         elif block.name == "Glob":
                             details = block.input.get("pattern", "")
+                        elif block.name == "Task":
+                            details = block.input.get("description", "")
+                        else:
+                            # Log unknown tools
+                            logger.warning(f"  Unknown tool: {block.name}, input: {block.input}")
+                            details = str(block.input)
                         self.callback.on_tool_use(block.name, details)
 
                     elif isinstance(block, TextBlock):
                         text = block.text
+                        logger.debug(f"  TextBlock ({len(text)} chars): {text[:100]}...")
                         full_text.append(text)
 
                         # Output text excluding <idascript> blocks
                         cleaned = IDASCRIPT_PATTERN.sub("", text).strip()
                         if cleaned:
                             self.callback.on_text(cleaned)
+                    else:
+                        logger.warning(f"  Unknown block type: {type(block).__name__}")
 
             elif isinstance(message, ResultMessage):
+                logger.info(f"ResultMessage: turns={message.num_turns}, cost={message.total_cost_usd}")
+
                 # Extract scripts from the response
                 if full_text:
                     combined = "".join(full_text)
                     scripts_found = IDASCRIPT_PATTERN.findall(combined)
+                    logger.info(f"Found {len(scripts_found)} scripts in response")
 
                     # Execute each script
-                    for script_code in scripts_found:
-                        self.callback.on_script_start()
-                        output = self._execute_script(script_code.strip())
+                    for j, script_code in enumerate(scripts_found):
+                        code = script_code.strip()
+                        logger.debug(f"Script {j+1}:\n{code}")
+                        self.callback.on_script_code(code)
+                        output = self._execute_script(code)
+                        logger.debug(f"Script {j+1} output:\n{output}")
                         script_outputs.append(output)
                         if output:
                             self.callback.on_script_output(output)
@@ -231,6 +260,8 @@ class IDAChatCore:
                         message.num_turns,
                         message.total_cost_usd
                     )
+            else:
+                logger.warning(f"Unknown message type: {type(message).__name__}")
 
         return scripts_found, script_outputs
 
@@ -251,15 +282,21 @@ class IDAChatCore:
         if not self.client:
             raise RuntimeError("Client not connected. Call connect() first.")
 
+        logger.info("-" * 60)
+        logger.info(f"USER MESSAGE: {user_input[:200]}...")
+
         current_input = user_input
         all_script_outputs: list[str] = []
         turn = 0
 
         while turn < self.max_turns:
             turn += 1
+            logger.info(f"=== TURN {turn}/{self.max_turns} ===")
+            self.callback.on_turn_start(turn, self.max_turns)
             self.callback.on_thinking()
 
             # Send message to agent
+            logger.debug(f"Sending to agent: {current_input[:200]}...")
             await self.client.query(current_input)
 
             # Process response and execute any scripts
@@ -268,6 +305,7 @@ class IDAChatCore:
 
             if not scripts_found:
                 # No scripts in response = agent is done
+                logger.info("No scripts in response - agent is done")
                 break
 
             # Feed script results back to agent for next turn
@@ -280,10 +318,13 @@ class IDAChatCore:
                     else:
                         formatted_outputs.append(output)
                 current_input = "Script output:\n\n" + "\n\n".join(formatted_outputs)
+                logger.debug(f"Feeding back to agent: {current_input[:200]}...")
             else:
                 current_input = "Script executed successfully with no output."
+                logger.debug("Script had no output, notifying agent")
 
         if turn >= self.max_turns:
+            logger.warning(f"Reached maximum turns ({self.max_turns})")
             self.callback.on_error(f"Reached maximum turns ({self.max_turns})")
 
         return "\n".join(all_script_outputs) if all_script_outputs else ""

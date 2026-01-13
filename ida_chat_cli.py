@@ -33,6 +33,9 @@ class Colors:
 class CLICallback(ChatCallback):
     """Terminal output implementation of ChatCallback."""
 
+    def on_turn_start(self, turn: int, max_turns: int) -> None:
+        pass  # Don't display turn info in UI
+
     def on_thinking(self) -> None:
         print(f"{Colors.DIM}[Thinking...]{Colors.RESET}", end="", flush=True)
 
@@ -49,11 +52,18 @@ class CLICallback(ChatCallback):
     def on_text(self, text: str) -> None:
         print(text)
 
-    def on_script_start(self) -> None:
-        print(f"{Colors.YELLOW}[Executing script...]{Colors.RESET}")
+    def on_script_code(self, code: str) -> None:
+        # Show script code with syntax highlighting hint
+        print(f"{Colors.YELLOW}[Executing script]{Colors.RESET}")
+        # Show first few lines of the script
+        lines = code.strip().split('\n')
+        preview = '\n'.join(lines[:5])
+        if len(lines) > 5:
+            preview += f"\n{Colors.DIM}... ({len(lines) - 5} more lines){Colors.RESET}"
+        print(f"{Colors.DIM}{preview}{Colors.RESET}")
 
     def on_script_output(self, output: str) -> None:
-        print(output)
+        print(f"{Colors.GREEN}{output}{Colors.RESET}")
 
     def on_error(self, error: str) -> None:
         print(f"{Colors.YELLOW}Error: {error}{Colors.RESET}", file=sys.stderr)

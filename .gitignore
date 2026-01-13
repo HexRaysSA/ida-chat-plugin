@@ -21,3 +21,6 @@ __pycache__/
 .vscode/
 *.swp
 *.swo
+
+# Bundled third-party code (ida-domain skill)
+work/
