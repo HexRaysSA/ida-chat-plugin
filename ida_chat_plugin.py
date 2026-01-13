@@ -1,9 +1,15 @@
 """
 IDA Chat - LLM Chat Client Plugin for IDA Pro
 
-A dockable chat interface that serves as a base for developing
-a full LLM chat client within IDA Pro.
+A dockable chat interface powered by Claude Agent SDK for
+AI-assisted reverse engineering within IDA Pro.
 """
+
+import asyncio
+import sys
+from io import StringIO
+from pathlib import Path
+from typing import Callable
 
 import ida_idaapi
 import ida_kernwin
@@ -20,8 +26,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QApplication,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread, QObject
 from PySide6.QtGui import QKeyEvent, QPalette
+
+# Ensure local modules are importable
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+from ida_chat_core import IDAChatCore, ChatCallback
 
 
 # Plugin metadata
@@ -211,13 +222,251 @@ class ChatInputWidget(QPlainTextEdit):
             super().keyPressEvent(event)
 
 
+class PluginCallback(ChatCallback):
+    """Qt widget output implementation of ChatCallback.
+
+    Uses Qt signals to safely update UI from any thread.
+    """
+
+    def __init__(self, signals: "AgentSignals"):
+        self.signals = signals
+
+    def on_thinking(self) -> None:
+        self.signals.thinking.emit()
+
+    def on_thinking_done(self) -> None:
+        self.signals.thinking_done.emit()
+
+    def on_tool_use(self, tool_name: str, details: str) -> None:
+        self.signals.tool_use.emit(tool_name, details)
+
+    def on_text(self, text: str) -> None:
+        self.signals.text.emit(text)
+
+    def on_script_start(self) -> None:
+        self.signals.script_start.emit()
+
+    def on_script_output(self, output: str) -> None:
+        self.signals.script_output.emit(output)
+
+    def on_error(self, error: str) -> None:
+        self.signals.error.emit(error)
+
+    def on_result(self, num_turns: int, cost: float | None) -> None:
+        self.signals.result.emit(num_turns, cost or 0.0)
+
+
+class AgentSignals(QObject):
+    """Qt signals for agent callbacks."""
+
+    thinking = Signal()
+    thinking_done = Signal()
+    tool_use = Signal(str, str)
+    text = Signal(str)
+    script_start = Signal()
+    script_output = Signal(str)
+    error = Signal(str)
+    result = Signal(int, float)
+    finished = Signal()
+    connection_ready = Signal()
+    connection_error = Signal(str)
+
+
+class AgentWorker(QThread):
+    """Background worker for running async agent calls."""
+
+    def __init__(self, db: Database, script_executor: Callable[[str], str], parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.script_executor = script_executor
+        self.signals = AgentSignals()
+        self.callback = PluginCallback(self.signals)
+        self.core: IDAChatCore | None = None
+        self._pending_message: str | None = None
+        self._should_connect = False
+        self._should_disconnect = False
+        self._running = True
+
+    def request_connect(self):
+        """Request connection to agent."""
+        self._should_connect = True
+        if not self.isRunning():
+            self.start()
+
+    def request_disconnect(self):
+        """Request disconnection from agent."""
+        self._should_disconnect = True
+        self._running = False
+
+    def send_message(self, message: str):
+        """Queue a message to be sent to the agent."""
+        self._pending_message = message
+        if not self.isRunning():
+            self.start()
+
+    def run(self):
+        """Run the async event loop in this thread."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(self._async_run())
+        finally:
+            loop.close()
+
+    async def _async_run(self):
+        """Main async loop."""
+        # Handle connection request
+        if self._should_connect:
+            self._should_connect = False
+            try:
+                self.core = IDAChatCore(
+                    self.db,
+                    self.callback,
+                    script_executor=self.script_executor,
+                )
+                await self.core.connect()
+                self.signals.connection_ready.emit()
+            except Exception as e:
+                self.signals.connection_error.emit(str(e))
+                return
+
+        # Process messages while running
+        while self._running:
+            if self._pending_message:
+                message = self._pending_message
+                self._pending_message = None
+                try:
+                    await self.core.process_message(message)
+                except Exception as e:
+                    self.signals.error.emit(str(e))
+                self.signals.finished.emit()
+
+            # Check for disconnect request
+            if self._should_disconnect:
+                break
+
+            # Small sleep to avoid busy loop
+            await asyncio.sleep(0.1)
+
+        # Handle disconnection
+        if self.core:
+            await self.core.disconnect()
+
+
 class IDAChatForm(ida_kernwin.PluginForm):
     """Main chat widget form."""
 
     def OnCreate(self, form):
         """Called when the widget is created."""
         self.parent = self.FormToPyQtWidget(form)
+        self.worker: AgentWorker | None = None
+        self._is_processing = False
         self._create_ui()
+        self._init_agent()
+
+    def _create_script_executor(self, db: Database) -> Callable[[str], str]:
+        """Create a script executor that runs on the main thread.
+
+        IDA operations must be performed on the main thread. This executor
+        uses ida_kernwin.execute_sync() to ensure scripts run safely.
+        """
+        def execute_on_main_thread(code: str) -> str:
+            result = [""]
+
+            def run_script():
+                old_stdout = sys.stdout
+                sys.stdout = captured = StringIO()
+                try:
+                    exec(code, {"db": db, "print": print})
+                    result[0] = captured.getvalue()
+                except Exception as e:
+                    result[0] = f"Script error: {e}"
+                finally:
+                    sys.stdout = old_stdout
+                return 1  # Required return for execute_sync
+
+            ida_kernwin.execute_sync(run_script, ida_kernwin.MFF_FAST)
+            return result[0]
+
+        return execute_on_main_thread
+
+    def _init_agent(self):
+        """Initialize the agent worker."""
+        try:
+            db = Database.open()
+            script_executor = self._create_script_executor(db)
+            self.worker = AgentWorker(db, script_executor)
+
+            # Connect signals
+            self.worker.signals.connection_ready.connect(self._on_connection_ready)
+            self.worker.signals.connection_error.connect(self._on_connection_error)
+            self.worker.signals.thinking.connect(self._on_thinking)
+            self.worker.signals.thinking_done.connect(self._on_thinking_done)
+            self.worker.signals.tool_use.connect(self._on_tool_use)
+            self.worker.signals.text.connect(self._on_text)
+            self.worker.signals.script_start.connect(self._on_script_start)
+            self.worker.signals.script_output.connect(self._on_script_output)
+            self.worker.signals.error.connect(self._on_error)
+            self.worker.signals.finished.connect(self._on_finished)
+
+            # Start connection
+            self.worker.request_connect()
+        except Exception as e:
+            self.chat_history.add_message(f"Error initializing agent: {e}", is_user=False)
+
+    def _on_connection_ready(self):
+        """Called when agent connection is established."""
+        self.chat_history.add_message("Agent connected and ready!", is_user=False)
+        self.input_widget.setEnabled(True)
+
+    def _on_connection_error(self, error: str):
+        """Called when agent connection fails."""
+        self.chat_history.add_message(f"Connection error: {error}", is_user=False)
+
+    def _on_thinking(self):
+        """Called when agent starts processing."""
+        self._is_processing = True
+        self.input_widget.setEnabled(False)
+        self.chat_history.add_message("[Thinking...]", is_user=False)
+
+    def _on_thinking_done(self):
+        """Called when agent produces first output."""
+        # Remove the thinking message
+        if self.chat_history.layout.count() > 1:
+            item = self.chat_history.layout.takeAt(self.chat_history.layout.count() - 2)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+    def _on_tool_use(self, tool_name: str, details: str):
+        """Called when agent uses a tool."""
+        tool_msg = f"[{tool_name}]"
+        if details:
+            tool_msg += f" {details}"
+        self.chat_history.add_message(tool_msg, is_user=False)
+
+    def _on_text(self, text: str):
+        """Called when agent outputs text."""
+        if text.strip():
+            self.chat_history.add_message(text, is_user=False)
+
+    def _on_script_start(self):
+        """Called before executing a script."""
+        self.chat_history.add_message("[Executing script...]", is_user=False)
+
+    def _on_script_output(self, output: str):
+        """Called with script output."""
+        if output.strip():
+            self.chat_history.add_message(output, is_user=False)
+
+    def _on_error(self, error: str):
+        """Called when an error occurs."""
+        self.chat_history.add_message(f"Error: {error}", is_user=False)
+
+    def _on_finished(self):
+        """Called when agent finishes processing."""
+        self._is_processing = False
+        self.input_widget.setEnabled(True)
 
     def _create_ui(self):
         """Create the chat interface UI."""
@@ -310,10 +559,11 @@ class IDAChatForm(ida_kernwin.PluginForm):
     def _add_welcome_message(self):
         """Add a welcome message to the chat."""
         welcome_text = (
-            "Welcome to IDA Chat! This is a base implementation for an LLM chat client. "
-            "Connect your preferred LLM backend to enable AI-powered analysis."
+            "Welcome to IDA Chat! Connecting to Claude Agent SDK..."
         )
         self.chat_history.add_message(welcome_text, is_user=False)
+        # Disable input until agent is connected
+        self.input_widget.setEnabled(False)
 
     def _on_message_submitted(self, text: str):
         """Handle message submission from input widget."""
@@ -327,61 +577,15 @@ class IDAChatForm(ida_kernwin.PluginForm):
             self.input_widget.clear()
 
     def _send_message(self, text: str):
-        """Send a message and get a response."""
+        """Send a message to the agent."""
+        if not self.worker or self._is_processing:
+            return
+
         # Add user message to chat
         self.chat_history.add_message(text, is_user=True)
 
-        # Check for built-in commands
-        if text.strip().lower() == "list functions":
-            response = self._handle_list_functions()
-        else:
-            # TODO: Replace this with actual LLM backend integration
-            response = self._get_placeholder_response(text)
-
-        self.chat_history.add_message(response, is_user=False)
-
-    def _get_placeholder_response(self, user_message: str) -> str:
-        """
-        Get a placeholder response.
-
-        TODO: Replace this method with actual LLM backend integration.
-        Implement your LLM API calls here (e.g., OpenAI, Anthropic, local models).
-        """
-        return (
-            f"This is a placeholder response. To enable AI responses, "
-            f"integrate your LLM backend in the _send_message() method.\n\n"
-            f"Your message was: \"{user_message[:50]}{'...' if len(user_message) > 50 else ''}\""
-        )
-
-    def _handle_list_functions(self) -> str:
-        """List all functions in the current IDB using IDA Domain API."""
-        try:
-            db = Database.open()
-
-            functions = []
-            for func in db.functions:
-                name = db.functions.get_name(func)
-                start_ea = func.start_ea
-                end_ea = func.end_ea
-                size = end_ea - start_ea
-                functions.append((name, start_ea, end_ea, size))
-
-            if not functions:
-                return "No functions found in the current database."
-
-            lines = [f"Found {len(functions)} functions:\n"]
-
-            MAX_DISPLAY = 50
-            for name, start, end, size in functions[:MAX_DISPLAY]:
-                lines.append(f"  {name}: 0x{start:08X} - 0x{end:08X} ({size} bytes)")
-
-            if len(functions) > MAX_DISPLAY:
-                lines.append(f"\n  ... and {len(functions) - MAX_DISPLAY} more functions")
-
-            return "\n".join(lines)
-
-        except Exception as e:
-            return f"Error listing functions: {str(e)}"
+        # Send to agent
+        self.worker.send_message(text)
 
     def _on_clear(self):
         """Clear the chat history."""
@@ -390,7 +594,10 @@ class IDAChatForm(ida_kernwin.PluginForm):
 
     def OnClose(self, form):
         """Called when the widget is closed."""
-        pass
+        if self.worker:
+            self.worker.request_disconnect()
+            self.worker.wait(5000)  # Wait up to 5 seconds for clean shutdown
+            self.worker = None
 
 
 class ToggleWidgetHandler(ida_kernwin.action_handler_t):

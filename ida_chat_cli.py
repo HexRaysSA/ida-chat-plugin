@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
 """
-IDA Chat CLI - Chat interface for IDA Pro using Claude Agent SDK.
+IDA Chat CLI - Command-line chat interface for IDA Pro.
 
 Usage:
-    uv run python idachat.py <binary.i64>              # Interactive mode
-    uv run python idachat.py <binary.i64> -p "prompt"  # Single prompt mode
+    uv run python ida_chat_cli.py <binary.i64>              # Interactive mode
+    uv run python ida_chat_cli.py <binary.i64> -p "prompt"  # Single prompt mode
 """
 
 import argparse
 import asyncio
-import re
 import sys
-from io import StringIO
 from pathlib import Path
 
-from claude_agent_sdk import (
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    ResultMessage,
-)
+# Ensure local modules are importable
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+# Import local module first (before ida_domain which may modify sys.path)
+from ida_chat_core import IDAChatCore, ChatCallback
+
 from ida_domain import Database
 
 
@@ -35,45 +30,49 @@ class Colors:
     RESET = "\033[0m"
 
 
-# Path to ida-domain skill directory for loading skills
-IDA_DOMAIN_SKILL_DIR = (
-    Path.home()
-    / ".claude/plugins/cache/ida-claude-plugins/ida-domain/1.0.0/skills/ida-domain-scripting"
-)
+class CLICallback(ChatCallback):
+    """Terminal output implementation of ChatCallback."""
 
-# Regex to extract <idascript>...</idascript> blocks
-IDASCRIPT_PATTERN = re.compile(r"<idascript>(.*?)</idascript>", re.DOTALL)
+    def on_thinking(self) -> None:
+        print(f"{Colors.DIM}[Thinking...]{Colors.RESET}", end="", flush=True)
 
-# System prompt addition for the agent
-SYSTEM_PROMPT_APPEND = """
-You have access to an open IDA database via the `db` variable.
-When you need to query or analyze the binary, output Python code in <idascript> tags.
-The code will be exec()'d with `db` in scope. Use print() for output.
+    def on_thinking_done(self) -> None:
+        # Clear the thinking indicator
+        print("\r" + " " * 15 + "\r", end="")
 
-Example:
-<idascript>
-for i, func in enumerate(db.functions):
-    if i >= 10:
-        break
-    name = db.functions.get_name(func)
-    print(f"{name}: 0x{func.start_ea:08X}")
-</idascript>
+    def on_tool_use(self, tool_name: str, details: str) -> None:
+        tool_info = f"{Colors.CYAN}[{tool_name}]{Colors.RESET}"
+        if details:
+            tool_info += f" {Colors.DIM}{details}{Colors.RESET}"
+        print(tool_info)
 
-Always wrap analysis code in <idascript> tags. The output from print() will be shown to the user.
-"""
+    def on_text(self, text: str) -> None:
+        print(text)
+
+    def on_script_start(self) -> None:
+        print(f"{Colors.YELLOW}[Executing script...]{Colors.RESET}")
+
+    def on_script_output(self, output: str) -> None:
+        print(output)
+
+    def on_error(self, error: str) -> None:
+        print(f"{Colors.YELLOW}Error: {error}{Colors.RESET}", file=sys.stderr)
+
+    def on_result(self, num_turns: int, cost: float | None) -> None:
+        print(f"{Colors.DIM}[Turns: {num_turns}, Cost: ${cost or 0:.4f}]{Colors.RESET}")
 
 
 class IDAChat:
-    """Chat interface for IDA Pro backed by Claude Agent SDK."""
+    """CLI chat interface for IDA Pro."""
 
     def __init__(self, binary_path: str, verbose: bool = False):
         self.binary_path = Path(binary_path).resolve()
         self.verbose = verbose
         self.db = None
-        self.client = None
+        self.core: IDAChatCore | None = None
 
-    async def start(self):
-        """Open database and initialize the agent client."""
+    async def start(self) -> None:
+        """Open database and initialize the agent."""
         print(f"Opening database: {self.binary_path}")
         self.db = Database.open(str(self.binary_path))
         print(f"Database opened: {self.db.module}")
@@ -81,26 +80,14 @@ class IDAChat:
         print(f"Functions: {len(self.db.functions)}")
         print()
 
-        # Configure agent options
-        options = ClaudeAgentOptions(
-            cwd=str(IDA_DOMAIN_SKILL_DIR),
-            setting_sources=["project"],
-            allowed_tools=["Read", "Glob", "Grep"],
-            permission_mode="bypassPermissions",
-            system_prompt={
-                "type": "preset",
-                "preset": "claude_code",
-                "append": SYSTEM_PROMPT_APPEND,
-            },
-        )
+        callback = CLICallback()
+        self.core = IDAChatCore(self.db, callback, verbose=self.verbose)
+        await self.core.connect()
 
-        self.client = ClaudeSDKClient(options=options)
-        await self.client.connect()
-
-    async def stop(self, save: bool = False):
+    async def stop(self, save: bool = False) -> None:
         """Clean up resources."""
-        if self.client:
-            await self.client.disconnect()
+        if self.core:
+            await self.core.disconnect()
         if self.db and save:
             print(f"{Colors.CYAN}Saving and packing database...{Colors.RESET}")
             self.db.save()
@@ -114,79 +101,6 @@ class IDAChat:
             return response in ("y", "yes")
         except (EOFError, KeyboardInterrupt):
             return False
-
-    def execute_script(self, code: str) -> str:
-        """Execute an idascript against the open database."""
-        # Capture stdout
-        old_stdout = sys.stdout
-        sys.stdout = captured = StringIO()
-
-        try:
-            # Execute with db in scope
-            exec(code, {"db": self.db, "print": print})
-            return captured.getvalue()
-        except Exception as e:
-            return f"Script error: {e}"
-        finally:
-            sys.stdout = old_stdout
-
-    async def process_message(self, user_input: str) -> str:
-        """Send message to agent and process response."""
-        # Show thinking indicator
-        print(f"{Colors.DIM}[Thinking...]{Colors.RESET}", end="", flush=True)
-
-        await self.client.query(user_input)
-
-        full_text = []
-        script_outputs = []
-        first_output = True
-
-        async for message in self.client.receive_response():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    # Clear thinking indicator on first output
-                    if first_output:
-                        print("\r" + " " * 15 + "\r", end="")
-                        first_output = False
-
-                    if isinstance(block, ToolUseBlock):
-                        # Show tool being called
-                        tool_info = f"{Colors.CYAN}[{block.name}]{Colors.RESET}"
-                        if block.name == "Read":
-                            tool_info += f" {Colors.DIM}{block.input.get('file_path', '')}{Colors.RESET}"
-                        elif block.name == "Grep":
-                            tool_info += f" {Colors.DIM}{block.input.get('pattern', '')}{Colors.RESET}"
-                        elif block.name == "Glob":
-                            tool_info += f" {Colors.DIM}{block.input.get('pattern', '')}{Colors.RESET}"
-                        print(tool_info)
-
-                    elif isinstance(block, TextBlock):
-                        text = block.text
-                        full_text.append(text)
-
-                        # Print text that's not inside <idascript> tags
-                        cleaned = IDASCRIPT_PATTERN.sub("", text).strip()
-                        if cleaned:
-                            print(cleaned)
-
-            elif isinstance(message, ResultMessage):
-                print()  # New line after streaming
-
-                # Now check for and execute any scripts in the final text
-                if full_text:
-                    combined = "".join(full_text)
-                    matches = IDASCRIPT_PATTERN.findall(combined)
-                    for script_code in matches:
-                        print(f"{Colors.YELLOW}[Executing script...]{Colors.RESET}")
-                        output = self.execute_script(script_code.strip())
-                        if output:
-                            script_outputs.append(output)
-
-                if self.verbose:
-                    print(f"{Colors.DIM}[Turns: {message.num_turns}, Cost: ${message.total_cost_usd or 0:.4f}]{Colors.RESET}")
-
-        # Return script output
-        return "\n".join(script_outputs) if script_outputs else ""
 
     async def run_interactive(self) -> bool:
         """Run interactive chat loop. Returns True if user wants to save on exit."""
@@ -202,7 +116,6 @@ class IDAChat:
                 print("\nGoodbye!")
                 break
             except KeyboardInterrupt:
-                # Ctrl+C pressed - ask about saving
                 save_on_exit = self.prompt_save_on_exit()
                 print("Goodbye!")
                 break
@@ -216,10 +129,9 @@ class IDAChat:
                 break
 
             try:
-                result = await self.process_message(user_input)
-                print(f"\n{result}")
+                await self.core.process_message(user_input)
+                print()  # Blank line after response
             except KeyboardInterrupt:
-                # Ctrl+C during processing - ask about saving
                 print(f"\n{Colors.YELLOW}[Interrupted]{Colors.RESET}")
                 save_on_exit = self.prompt_save_on_exit()
                 print("Goodbye!")
@@ -227,10 +139,9 @@ class IDAChat:
 
         return save_on_exit
 
-    async def run_single_prompt(self, prompt: str):
+    async def run_single_prompt(self, prompt: str) -> None:
         """Execute a single prompt and exit."""
-        result = await self.process_message(prompt)
-        print(result)
+        await self.core.process_message(prompt)
 
 
 async def async_main():
@@ -239,11 +150,10 @@ async def async_main():
     )
     parser.add_argument("binary", help="Path to binary or .i64 file")
     parser.add_argument("-p", "--prompt", help="Single prompt (non-interactive mode)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show agent reasoning")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show agent stats")
 
     args = parser.parse_args()
 
-    # Validate binary exists
     if not Path(args.binary).exists():
         print(f"Error: File not found: {args.binary}", file=sys.stderr)
         sys.exit(1)
@@ -259,7 +169,6 @@ async def async_main():
         else:
             save_on_exit = await chat.run_interactive()
     except KeyboardInterrupt:
-        # Handle Ctrl+C during startup or single prompt
         save_on_exit = chat.prompt_save_on_exit() if chat.db else False
         print("Goodbye!")
     finally:
