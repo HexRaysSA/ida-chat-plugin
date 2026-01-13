@@ -121,14 +121,23 @@ class IDAChat:
 
     async def process_message(self, user_input: str) -> str:
         """Send message to agent and process response."""
+        # Show thinking indicator
+        print(f"{Colors.DIM}[Thinking...]{Colors.RESET}", end="", flush=True)
+
         await self.client.query(user_input)
 
         full_text = []
         script_outputs = []
+        first_output = True
 
         async for message in self.client.receive_response():
             if isinstance(message, AssistantMessage):
                 for block in message.content:
+                    # Clear thinking indicator on first output
+                    if first_output:
+                        print("\r" + " " * 15 + "\r", end="")
+                        first_output = False
+
                     if isinstance(block, ToolUseBlock):
                         # Show tool being called
                         tool_info = f"{Colors.CYAN}[{block.name}]{Colors.RESET}"
