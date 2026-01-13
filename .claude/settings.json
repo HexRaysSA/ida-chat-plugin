@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "ida-plugin@ida-claude-plugins": true,
+    "ida-domain@ida-claude-plugins": true
+  }
+}

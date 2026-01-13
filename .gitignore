@@ -1,0 +1,14 @@
+# Build artifacts
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo

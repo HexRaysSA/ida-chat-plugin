@@ -1,0 +1,21 @@
+{
+  "IDAMetadataDescriptorVersion": 1,
+  "plugin": {
+    "name": "ida-chat",
+    "version": "1.0.0",
+    "description": "LLM Chat Client for IDA Pro - A dockable chat interface for AI-powered reverse engineering assistance",
+    "entryPoint": "ida_chat.py",
+    "authors": [
+      {
+        "name": "IDA Chat Developer",
+        "email": "developer@example.com"
+      }
+    ],
+    "license": "MIT",
+    "urls": {
+      "repository": "https://github.com/example/ida-chat"
+    },
+    "idaVersions": ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0"],
+    "platforms": ["windows-x86_64", "linux-x86_64", "macos-x86_64", "macos-aarch64"]
+  }
+}
