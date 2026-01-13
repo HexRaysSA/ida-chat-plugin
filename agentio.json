@@ -1,9 +1,0 @@
-{
-  "marketplaces": [
-    "https://github.com/HexRaysSA/ida-claude-plugins"
-  ],
-  "plugins": [
-    "ida-plugin@ida-claude-plugins",
-    "ida-domain@ida-claude-plugins"
-  ]
-}

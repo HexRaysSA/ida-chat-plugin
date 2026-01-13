@@ -24,3 +24,8 @@ __pycache__/
 
 # Bundled third-party code (ida-domain skill)
 work/
+
+# Local config
+CLAUDE.md
+agentio.json
+
