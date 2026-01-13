@@ -102,6 +102,20 @@ zip -r ida-chat.zip ida-plugin.json ida_chat_plugin.py ida_chat_core.py project/
 hcli plugin install ida-chat.zip
 ```
 
+## Releasing
+
+```bash
+# Build the release zip
+zip -r ida-chat.zip ida-plugin.json ida_chat_plugin.py ida_chat_core.py ida_chat_history.py project/
+
+# Create and push the tag
+git tag -a X.Y.Z -m "Release message"
+git push origin X.Y.Z
+
+# Create GitHub release with artifact
+gh release create X.Y.Z ida-chat.zip --title "vX.Y.Z - Title" --generate-notes
+```
+
 ## Logging
 
 Debug logs written to `/tmp/ida-chat.log` for troubleshooting agent behavior.

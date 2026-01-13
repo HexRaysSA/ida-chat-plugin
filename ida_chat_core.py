@@ -55,6 +55,46 @@ def _load_system_prompt() -> str:
     return "You have access to an open IDA database via the `db` variable. Use <idascript> tags for code."
 
 
+async def test_claude_connection() -> tuple[bool, str]:
+    """Test Claude connectivity with a fun prompt.
+
+    This is a lightweight test that doesn't require a database or full
+    agent configuration. Used by the onboarding panel to verify setup.
+
+    Returns:
+        Tuple of (success, message):
+        - On success: (True, Claude's joke response)
+        - On failure: (False, error message)
+    """
+    logger.info("Testing Claude connection...")
+
+    options = ClaudeAgentOptions(
+        cwd=str(PROJECT_DIR),
+        permission_mode="bypassPermissions",
+        allowed_tools=[],  # No tools needed for simple test
+    )
+
+    client = ClaudeSDKClient(options=options)
+    try:
+        await client.connect()
+        await client.query("Tell me a short (one sentence) joke about reverse engineering")
+
+        response_text = ""
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        response_text += block.text
+
+        await client.disconnect()
+        logger.info(f"Connection test successful: {response_text[:100]}...")
+        return True, response_text.strip()
+
+    except Exception as e:
+        logger.error(f"Connection test failed: {e}")
+        return False, str(e)
+
+
 class ChatCallback(Protocol):
     """Protocol for handling chat output events.
 

@@ -10,7 +10,8 @@
     "categories": ["collaboration-and-productivity", "ui-ux-and-visualization"],
     "pythonDependencies": [
       "claude-agent-sdk",
-      "ida-domain"
+      "ida-domain",
+      "ida-settings"
     ],
     "urls": {
       "repository": "https://github.com/HexRaysSA/ida-chat-plugin"
@@ -22,6 +23,31 @@
     "maintainers": [{
       "name": "Pierre-Alexandre Losson",
       "email": "palosson@hex-rays.com"
-    }]
+    }],
+    "settings": [
+      {
+        "key": "show_wizard",
+        "name": "Show Setup Wizard",
+        "type": "boolean",
+        "description": "Show the setup wizard on plugin launch",
+        "default": true,
+        "required": false
+      },
+      {
+        "key": "auth_type",
+        "name": "Authentication Type",
+        "type": "string",
+        "description": "Authentication type: 'system', 'oauth', or 'api_key'",
+        "required": false
+      },
+      {
+        "key": "api_key",
+        "name": "API Key",
+        "type": "string",
+        "description": "API key or OAuth token (not needed for 'system' auth type)",
+        "sensitive": true,
+        "required": false
+      }
+    ]
   }
 }

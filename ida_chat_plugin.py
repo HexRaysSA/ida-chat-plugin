@@ -6,6 +6,7 @@ AI-assisted reverse engineering within IDA Pro.
 """
 
 import asyncio
+import os
 import re
 import sys
 from io import StringIO
@@ -14,6 +15,7 @@ from typing import Callable
 
 import ida_idaapi
 import ida_kernwin
+import ida_settings
 from ida_domain import Database
 from PySide6.QtWidgets import (
     QVBoxLayout,
@@ -26,14 +28,17 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QPlainTextEdit,
     QApplication,
+    QRadioButton,
+    QButtonGroup,
+    QLineEdit,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
-from PySide6.QtGui import QKeyEvent, QPalette, QFont
+from PySide6.QtGui import QKeyEvent, QPalette, QFont, QPixmap
 
 # Ensure local modules are importable
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
-from ida_chat_core import IDAChatCore, ChatCallback
+from ida_chat_core import IDAChatCore, ChatCallback, test_claude_connection
 from ida_chat_history import MessageHistory
 
 
@@ -71,6 +76,60 @@ def get_ida_colors():
         "dark": palette.color(QPalette.Dark).name(),
         "light": palette.color(QPalette.Light).name(),
     }
+
+
+# -----------------------------------------------------------------------------
+# Settings Management (using ida-settings)
+# -----------------------------------------------------------------------------
+
+
+def get_show_wizard() -> bool:
+    """Returns whether to show the setup wizard."""
+    if ida_settings.has_current_plugin_setting("show_wizard"):
+        return ida_settings.get_current_plugin_setting("show_wizard")
+    return True  # Default to true
+
+
+def set_show_wizard(value: bool) -> None:
+    """Set whether to show the setup wizard."""
+    ida_settings.set_current_plugin_setting("show_wizard", value)
+
+
+def get_auth_type() -> str | None:
+    """Returns 'system', 'oauth', or 'api_key', or None if not configured."""
+    if ida_settings.has_current_plugin_setting("auth_type"):
+        return ida_settings.get_current_plugin_setting("auth_type")
+    return None
+
+
+def get_api_key() -> str | None:
+    """Returns the stored API key/token."""
+    if ida_settings.has_current_plugin_setting("api_key"):
+        return ida_settings.get_current_plugin_setting("api_key")
+    return None
+
+
+def save_auth_settings(auth_type: str, api_key: str | None = None) -> None:
+    """Store authentication settings and disable wizard."""
+    ida_settings.set_current_plugin_setting("auth_type", auth_type)
+    if api_key:
+        ida_settings.set_current_plugin_setting("api_key", api_key)
+    elif ida_settings.has_current_plugin_setting("api_key"):
+        ida_settings.del_current_plugin_setting("api_key")
+    # Disable wizard after saving settings
+    set_show_wizard(False)
+
+
+def apply_auth_to_environment() -> None:
+    """Set environment variables based on stored settings."""
+    auth_type = get_auth_type()
+    api_key = get_api_key()
+    if auth_type == "system":
+        pass  # Use existing system configuration (keychain, env vars)
+    elif auth_type == "oauth" and api_key:
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = api_key
+    elif auth_type == "api_key" and api_key:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
 
 
 class CollapsibleSection(QFrame):
@@ -822,6 +881,318 @@ class AgentWorker(QThread):
             await self.core.disconnect()
 
 
+class TestConnectionWorker(QThread):
+    """Background thread for testing Claude connection."""
+
+    finished = Signal(bool, str)  # (success, message)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def run(self):
+        """Run the connection test."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            success, message = loop.run_until_complete(test_claude_connection())
+            self.finished.emit(success, message)
+        except Exception as e:
+            self.finished.emit(False, str(e))
+        finally:
+            loop.close()
+
+
+class OnboardingPanel(QFrame):
+    """Onboarding panel for first-time setup and settings configuration."""
+
+    onboarding_complete = Signal()  # Emitted when user clicks Save & Start
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._test_worker: TestConnectionWorker | None = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        colors = get_ida_colors()
+
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {colors['base']};
+                border-radius: 8px;
+            }}
+        """)
+
+        # Main horizontal layout for two columns
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Left column (30%) - Image
+        image_container = QWidget()
+        image_layout = QVBoxLayout(image_container)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+
+        image_label = QLabel()
+        splash_path = Path(__file__).parent / "splash.png"
+        if splash_path.exists():
+            pixmap = QPixmap(str(splash_path))
+            image_label.setPixmap(pixmap.scaled(
+                300, 400,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            ))
+        image_label.setAlignment(Qt.AlignCenter)
+        image_layout.addWidget(image_label)
+        image_layout.addStretch()
+
+        main_layout.addWidget(image_container, stretch=30)
+
+        # Right column (70%) - Settings
+        settings_container = QWidget()
+        layout = QVBoxLayout(settings_container)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        # Title
+        title = QLabel("Welcome to IDA Chat")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {colors['text']};
+                font-size: 18px;
+                font-weight: bold;
+            }}
+        """)
+        layout.addWidget(title)
+
+        # Instructions
+        instructions = QLabel("Configure your Claude authentication:")
+        instructions.setStyleSheet(f"QLabel {{ color: {colors['mid']}; }}")
+        layout.addWidget(instructions)
+
+        # Radio buttons for auth type
+        self.auth_group = QButtonGroup(self)
+
+        # Option 1: System (use existing Claude installation)
+        self.radio_system = QRadioButton("Use Claude settings on my machine")
+        self.radio_system.setStyleSheet(f"QRadioButton {{ color: {colors['text']}; }}")
+        self.radio_system.setChecked(True)
+        self.auth_group.addButton(self.radio_system, 0)
+        layout.addWidget(self.radio_system)
+
+        system_hint = QLabel("    Recommended if Claude Code is installed")
+        system_hint.setStyleSheet(f"QLabel {{ color: {colors['mid']}; font-size: 11px; }}")
+        layout.addWidget(system_hint)
+
+        # Option 2: OAuth (Claude subscription)
+        self.radio_oauth = QRadioButton("Claude account (Pro, Max, Team, or Enterprise)")
+        self.radio_oauth.setStyleSheet(f"QRadioButton {{ color: {colors['text']}; }}")
+        self.auth_group.addButton(self.radio_oauth, 1)
+        layout.addWidget(self.radio_oauth)
+
+        # Option 3: API Key (Anthropic Console)
+        self.radio_api_key = QRadioButton("Anthropic Console account (API billing)")
+        self.radio_api_key.setStyleSheet(f"QRadioButton {{ color: {colors['text']}; }}")
+        self.auth_group.addButton(self.radio_api_key, 2)
+        layout.addWidget(self.radio_api_key)
+
+        # Key input field (hidden for system option)
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("Paste your key here...")
+        self.key_input.setEchoMode(QLineEdit.Password)
+        self.key_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {colors['alt_base']};
+                color: {colors['text']};
+                border: 1px solid {colors['mid']};
+                border-radius: 4px;
+                padding: 8px;
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['highlight']};
+            }}
+        """)
+        self.key_input.hide()  # Hidden by default (system option selected)
+        layout.addWidget(self.key_input)
+
+        # Connect radio buttons to show/hide key input
+        self.auth_group.buttonClicked.connect(self._on_auth_type_changed)
+
+        # Buttons row
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(12)
+
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['button']};
+                color: {colors['button_text']};
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['highlight']};
+                color: {colors['highlight_text']};
+            }}
+            QPushButton:disabled {{
+                background-color: {colors['mid']};
+            }}
+        """)
+        self.test_btn.clicked.connect(self._on_test_clicked)
+        buttons_layout.addWidget(self.test_btn)
+
+        self.save_btn = QPushButton("Save && Start")
+        self.save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['highlight']};
+                color: {colors['highlight_text']};
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['button']};
+                color: {colors['button_text']};
+            }}
+            QPushButton:disabled {{
+                background-color: {colors['mid']};
+            }}
+        """)
+        self.save_btn.clicked.connect(self._on_save_clicked)
+        buttons_layout.addWidget(self.save_btn)
+
+        layout.addLayout(buttons_layout)
+
+        # Status label
+        self.status_label = QLabel("Not configured")
+        self.status_label.setStyleSheet(f"QLabel {{ color: {colors['mid']}; }}")
+        layout.addWidget(self.status_label)
+
+        # Response area (for showing joke on successful test)
+        self.response_label = QLabel()
+        self.response_label.setWordWrap(True)
+        self.response_label.setStyleSheet(f"""
+            QLabel {{
+                color: {colors['text']};
+                background-color: {colors['alt_base']};
+                border-radius: 4px;
+                padding: 12px;
+            }}
+        """)
+        self.response_label.hide()
+        layout.addWidget(self.response_label)
+
+        layout.addStretch()
+
+        main_layout.addWidget(settings_container, stretch=70)
+
+    def _on_auth_type_changed(self, button):
+        """Show/hide key input based on selected auth type."""
+        if button == self.radio_system:
+            self.key_input.hide()
+        else:
+            self.key_input.show()
+
+    def _on_test_clicked(self):
+        """Run connection test."""
+        self.test_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self.status_label.setText("Testing connection...")
+        self.response_label.hide()
+
+        # Apply settings to environment before testing
+        self._apply_current_settings()
+
+        # Start test worker
+        self._test_worker = TestConnectionWorker(self)
+        self._test_worker.finished.connect(self._on_test_finished)
+        self._test_worker.start()
+
+    def _on_test_finished(self, success: bool, message: str):
+        """Handle test result."""
+        colors = get_ida_colors()
+        self.test_btn.setEnabled(True)
+        self.save_btn.setEnabled(True)
+
+        if success:
+            self.status_label.setText("✓ Connected! You're all set.")
+            self.status_label.setStyleSheet(f"QLabel {{ color: #4CAF50; }}")  # Green
+            self.response_label.setText(message)
+            self.response_label.show()
+        else:
+            self.status_label.setText(f"✗ Connection failed: {message}")
+            self.status_label.setStyleSheet(f"QLabel {{ color: #F44336; }}")  # Red
+            self.response_label.hide()
+
+    def _apply_current_settings(self):
+        """Apply current UI settings to environment variables."""
+        auth_type = self._get_auth_type()
+        api_key = self.key_input.text().strip() if auth_type != "system" else None
+
+        if auth_type == "system":
+            pass  # Use existing system configuration
+        elif auth_type == "oauth" and api_key:
+            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = api_key
+        elif auth_type == "api_key" and api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+
+    def _get_auth_type(self) -> str:
+        """Get the selected auth type."""
+        if self.radio_system.isChecked():
+            return "system"
+        elif self.radio_oauth.isChecked():
+            return "oauth"
+        else:
+            return "api_key"
+
+    def _on_save_clicked(self):
+        """Save settings and emit completion signal."""
+        auth_type = self._get_auth_type()
+        api_key = self.key_input.text().strip() if auth_type != "system" else None
+
+        # Validate key input for non-system auth types
+        if auth_type != "system" and not api_key:
+            colors = get_ida_colors()
+            self.status_label.setText("Please enter your API key")
+            self.status_label.setStyleSheet(f"QLabel {{ color: #F44336; }}")
+            return
+
+        # Save settings
+        save_auth_settings(auth_type, api_key)
+
+        # Apply to environment
+        self._apply_current_settings()
+
+        # Emit completion signal
+        self.onboarding_complete.emit()
+
+    def load_current_settings(self):
+        """Load current settings into the UI (for settings mode)."""
+        auth_type = get_auth_type()
+        api_key = get_api_key()
+
+        if auth_type == "system":
+            self.radio_system.setChecked(True)
+            self.key_input.hide()
+        elif auth_type == "oauth":
+            self.radio_oauth.setChecked(True)
+            self.key_input.show()
+            if api_key:
+                self.key_input.setText(api_key)
+        elif auth_type == "api_key":
+            self.radio_api_key.setChecked(True)
+            self.key_input.show()
+            if api_key:
+                self.key_input.setText(api_key)
+
+        # Reset status
+        colors = get_ida_colors()
+        self.status_label.setText("Settings loaded")
+        self.status_label.setStyleSheet(f"QLabel {{ color: {colors['mid']}; }}")
+        self.response_label.hide()
+
+
 class IDAChatForm(ida_kernwin.PluginForm):
     """Main chat widget form."""
 
@@ -838,7 +1209,15 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self._last_had_error = False
         self._summary_mode = False  # False = detailed, True = summary
         self._create_ui()
-        self._init_agent()
+
+        # Apply saved auth settings to environment
+        apply_auth_to_environment()
+
+        # Check if wizard should be shown
+        if get_show_wizard():
+            self._show_onboarding()
+        else:
+            self._init_agent()
 
     def _create_script_executor(self, db: Database) -> Callable[[str], str]:
         """Create a script executor that runs on the main thread.
@@ -895,6 +1274,26 @@ class IDAChatForm(ida_kernwin.PluginForm):
             self.worker.request_connect()
         except Exception as e:
             self.chat_history.add_message(f"Error initializing agent: {e}", is_user=False)
+
+    def _show_onboarding(self):
+        """Show onboarding panel, hide chat UI."""
+        self.onboarding_panel.show()
+        self.chat_history.hide()
+        self.input_container.hide()
+        self.progress_timeline.hide()
+
+    def _show_settings(self):
+        """Show settings panel (re-use onboarding panel)."""
+        # Load current settings into the panel
+        self.onboarding_panel.load_current_settings()
+        self._show_onboarding()
+
+    def _on_onboarding_complete(self):
+        """Handle successful onboarding."""
+        self.onboarding_panel.hide()
+        self.chat_history.show()
+        self.input_container.show()
+        self._init_agent()
 
     def _on_connection_ready(self):
         """Called when agent connection is established."""
@@ -1061,6 +1460,24 @@ class IDAChatForm(ida_kernwin.PluginForm):
         header_layout.addWidget(title)
         header_layout.addStretch()
 
+        # Settings button (gear icon)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setFixedSize(28, 28)
+        settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {colors['mid']};
+                border: none;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                color: {colors['window_text']};
+            }}
+        """)
+        settings_btn.clicked.connect(self._show_settings)
+        header_layout.addWidget(settings_btn)
+
         # Clear button
         clear_btn = QPushButton("Clear")
         clear_btn.setStyleSheet(f"""
@@ -1105,6 +1522,12 @@ class IDAChatForm(ida_kernwin.PluginForm):
         separator.setFixedHeight(1)
         layout.addWidget(separator)
 
+        # Onboarding panel (shown on first launch or when settings clicked)
+        self.onboarding_panel = OnboardingPanel()
+        self.onboarding_panel.onboarding_complete.connect(self._on_onboarding_complete)
+        self.onboarding_panel.hide()  # Hidden by default, shown if not onboarded
+        layout.addWidget(self.onboarding_panel)
+
         # Progress timeline (hidden by default)
         self.progress_timeline = ProgressTimeline()
         layout.addWidget(self.progress_timeline)
@@ -1114,8 +1537,8 @@ class IDAChatForm(ida_kernwin.PluginForm):
         layout.addWidget(self.chat_history, stretch=1)
 
         # Input area at bottom
-        input_container = QWidget()
-        input_layout = QHBoxLayout(input_container)
+        self.input_container = QWidget()
+        input_layout = QHBoxLayout(self.input_container)
         input_layout.setContentsMargins(8, 8, 8, 8)
         input_layout.setSpacing(8)
 
@@ -1125,7 +1548,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.input_widget.cancel_requested.connect(self._on_cancel)
         input_layout.addWidget(self.input_widget, stretch=1)
 
-        layout.addWidget(input_container)
+        layout.addWidget(self.input_container)
 
         # Status bar at bottom
         self.status_bar = QWidget()
