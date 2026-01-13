@@ -1,8 +1,10 @@
 """
 IDA Chat History - Persistent message history storage.
 
-Stores conversation history in JSONL format, similar to Claude Code's approach.
+Stores conversation history in JSONL format compatible with Claude Code's approach.
 Each binary gets its own session directory, with individual session files.
+
+Format is compatible with claude-code-log for viewing transcripts.
 """
 
 import json
@@ -19,10 +21,12 @@ class MessageHistory:
     Storage structure:
         $HOME/.ida-chat/sessions/{encoded_binary_path}/{session-uuid}.jsonl
 
-    Each line in a session file is a JSON object representing a message.
+    Each line in a session file is a JSON object representing a message,
+    compatible with Claude Code's JSONL format for use with claude-code-log.
     """
 
     BASE_DIR = Path.home() / ".ida-chat" / "sessions"
+    VERSION = "ida-chat-1.0.0"
 
     def __init__(self, binary_path: str):
         """Initialize message history for a binary.
@@ -89,18 +93,26 @@ class MessageHistory:
         """Get current UTC timestamp in ISO format."""
         return datetime.now(timezone.utc).isoformat()
 
-    def append_message(
-        self,
-        msg_type: str,
-        content: str | None = None,
-        **kwargs: Any
-    ) -> str:
-        """Append a message to the current session file.
+    def _create_base_entry(self) -> dict[str, Any]:
+        """Create base entry with common fields matching Claude Code format."""
+        msg_uuid = self._generate_uuid()
+        entry = {
+            "uuid": msg_uuid,
+            "parentUuid": self._parent_uuid,
+            "sessionId": self.session_id,
+            "timestamp": self._get_timestamp(),
+            "version": self.VERSION,
+            "cwd": str(Path(self.binary_path).parent),
+            "isSidechain": False,
+            "userType": "external",
+        }
+        return entry
+
+    def append_user_message(self, content: str) -> str:
+        """Append a user message to the session.
 
         Args:
-            msg_type: Message type (user, assistant, script, error, tool_use).
-            content: Message content (for user/assistant/error types).
-            **kwargs: Additional fields (code, output for script; tool_name, details for tool_use).
+            content: The user's message text.
 
         Returns:
             The UUID of the appended message.
@@ -108,37 +120,238 @@ class MessageHistory:
         if not self.session_file:
             raise RuntimeError("No active session. Call start_new_session() first.")
 
-        msg_uuid = self._generate_uuid()
-
-        entry: dict[str, Any] = {
-            "uuid": msg_uuid,
-            "parentUuid": self._parent_uuid,
-            "sessionId": self.session_id,
-            "type": msg_type,
-            "timestamp": self._get_timestamp(),
+        entry = self._create_base_entry()
+        entry["type"] = "user"
+        entry["message"] = {
+            "role": "user",
+            "content": [{"type": "text", "text": content}]
         }
 
-        # Add type-specific fields
-        if msg_type in ("user", "assistant", "error"):
-            entry["message"] = {
-                "role": msg_type if msg_type != "error" else "system",
-                "content": content or "",
-            }
-        elif msg_type == "script":
-            entry["code"] = kwargs.get("code", "")
-            entry["output"] = kwargs.get("output", "")
-        elif msg_type == "tool_use":
-            entry["toolName"] = kwargs.get("tool_name", "")
-            entry["details"] = kwargs.get("details", "")
+        self._write_entry(entry)
+        return entry["uuid"]
 
-        # Write to file (append mode)
+    def append_assistant_message(
+        self,
+        content: str,
+        model: str = "claude-sonnet-4-20250514",
+        usage: dict[str, Any] | None = None
+    ) -> str:
+        """Append an assistant message to the session.
+
+        Args:
+            content: The assistant's response text.
+            model: The model name used.
+            usage: Optional token usage information.
+
+        Returns:
+            The UUID of the appended message.
+        """
+        if not self.session_file:
+            raise RuntimeError("No active session. Call start_new_session() first.")
+
+        entry = self._create_base_entry()
+        entry["type"] = "assistant"
+        entry["message"] = {
+            "id": f"msg_{self._generate_uuid()}",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [{"type": "text", "text": content}],
+            "stop_reason": "end_turn",
+        }
+        if usage:
+            entry["message"]["usage"] = usage
+
+        self._write_entry(entry)
+        return entry["uuid"]
+
+    def append_tool_use(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        tool_use_id: str | None = None
+    ) -> str:
+        """Append a tool use message to the session.
+
+        Args:
+            tool_name: Name of the tool being used.
+            tool_input: Input parameters for the tool.
+            tool_use_id: Optional tool use ID (generated if not provided).
+
+        Returns:
+            The UUID of the appended message.
+        """
+        if not self.session_file:
+            raise RuntimeError("No active session. Call start_new_session() first.")
+
+        if tool_use_id is None:
+            tool_use_id = f"toolu_{self._generate_uuid()}"
+
+        entry = self._create_base_entry()
+        entry["type"] = "assistant"
+        entry["message"] = {
+            "id": f"msg_{self._generate_uuid()}",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{
+                "type": "tool_use",
+                "id": tool_use_id,
+                "name": tool_name,
+                "input": tool_input
+            }],
+            "stop_reason": "tool_use",
+        }
+
+        self._write_entry(entry)
+        return entry["uuid"]
+
+    def append_tool_result(
+        self,
+        tool_use_id: str,
+        result: str | list[dict[str, Any]],
+        is_error: bool = False
+    ) -> str:
+        """Append a tool result message to the session.
+
+        Args:
+            tool_use_id: The ID of the tool use this result corresponds to.
+            result: The tool result (string or list of content items).
+            is_error: Whether the result is an error.
+
+        Returns:
+            The UUID of the appended message.
+        """
+        if not self.session_file:
+            raise RuntimeError("No active session. Call start_new_session() first.")
+
+        # Convert string result to content list format
+        if isinstance(result, str):
+            content = result
+        else:
+            content = result
+
+        entry = self._create_base_entry()
+        entry["type"] = "user"
+        entry["message"] = {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+                "is_error": is_error
+            }]
+        }
+
+        self._write_entry(entry)
+        return entry["uuid"]
+
+    def append_thinking(self, thinking: str) -> str:
+        """Append a thinking block to the session.
+
+        Args:
+            thinking: The thinking/reasoning text.
+
+        Returns:
+            The UUID of the appended message.
+        """
+        if not self.session_file:
+            raise RuntimeError("No active session. Call start_new_session() first.")
+
+        entry = self._create_base_entry()
+        entry["type"] = "assistant"
+        entry["message"] = {
+            "id": f"msg_{self._generate_uuid()}",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{
+                "type": "thinking",
+                "thinking": thinking
+            }],
+        }
+
+        self._write_entry(entry)
+        return entry["uuid"]
+
+    def append_system_message(
+        self,
+        content: str,
+        level: str = "info",
+        subtype: str | None = None
+    ) -> str:
+        """Append a system message to the session.
+
+        Args:
+            content: The system message content.
+            level: Message level (info, warning, error).
+            subtype: Optional subtype for the system message.
+
+        Returns:
+            The UUID of the appended message.
+        """
+        if not self.session_file:
+            raise RuntimeError("No active session. Call start_new_session() first.")
+
+        entry = self._create_base_entry()
+        entry["type"] = "system"
+        entry["content"] = content
+        entry["level"] = level
+        if subtype:
+            entry["subtype"] = subtype
+
+        self._write_entry(entry)
+        return entry["uuid"]
+
+    def append_script_execution(
+        self,
+        code: str,
+        output: str,
+        is_error: bool = False
+    ) -> str:
+        """Append a script execution (tool use + result) to the session.
+
+        This is a convenience method that creates both tool_use and tool_result
+        entries for IDA script execution.
+
+        Args:
+            code: The Python code that was executed.
+            output: The output from execution.
+            is_error: Whether the execution resulted in an error.
+
+        Returns:
+            The UUID of the tool result message.
+        """
+        tool_use_id = f"toolu_{self._generate_uuid()}"
+
+        # First, append the tool use
+        self.append_tool_use(
+            tool_name="IDAPythonExec",
+            tool_input={"code": code},
+            tool_use_id=tool_use_id
+        )
+
+        # Then append the result
+        return self.append_tool_result(
+            tool_use_id=tool_use_id,
+            result=output,
+            is_error=is_error
+        )
+
+    def _write_entry(self, entry: dict[str, Any]) -> None:
+        """Write an entry to the session file and update parent UUID.
+
+        Args:
+            entry: The entry to write.
+        """
+        if not self.session_file:
+            raise RuntimeError("No active session. Call start_new_session() first.")
+
         with open(self.session_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
         # Update parent UUID for chaining
-        self._parent_uuid = msg_uuid
-
-        return msg_uuid
+        self._parent_uuid = entry["uuid"]
 
     def load_session(self, session_id: str) -> list[dict[str, Any]]:
         """Load all messages from a session.
@@ -198,7 +411,14 @@ class MessageHistory:
 
                         if first_user_message is None and entry.get("type") == "user":
                             msg = entry.get("message", {})
-                            first_user_message = msg.get("content", "")[:100]
+                            content = msg.get("content", [])
+                            if content and isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict) and item.get("type") == "text":
+                                        first_user_message = item.get("text", "")[:100]
+                                        break
+                            elif isinstance(content, str):
+                                first_user_message = content[:100]
                     except json.JSONDecodeError:
                         continue
 
@@ -240,10 +460,21 @@ class MessageHistory:
                         entry = json.loads(line)
                         if entry.get("type") == "user":
                             msg = entry.get("message", {})
-                            content = msg.get("content", "")
+                            content = msg.get("content", [])
                             timestamp = entry.get("timestamp", "")
-                            if content:
-                                messages_with_time.append((timestamp, content))
+
+                            # Extract text from content (handle both formats)
+                            text = None
+                            if isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict) and item.get("type") == "text":
+                                        text = item.get("text", "")
+                                        break
+                            elif isinstance(content, str):
+                                text = content
+
+                            if text:
+                                messages_with_time.append((timestamp, text))
                     except json.JSONDecodeError:
                         continue
 
