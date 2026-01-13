@@ -9,4 +9,4 @@ dependencies = [
 ]
 
 [project.scripts]
-idachat = "idachat:main"
+idachat = "ida_chat_cli:main"

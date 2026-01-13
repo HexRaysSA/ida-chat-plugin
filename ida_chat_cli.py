@@ -19,9 +19,20 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     AssistantMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
     ResultMessage,
 )
 from ida_domain import Database
+
+
+# ANSI colors for terminal output
+class Colors:
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
 
 
 # Path to ida-domain skill directory for loading skills
@@ -112,36 +123,50 @@ class IDAChat:
         """Send message to agent and process response."""
         await self.client.query(user_input)
 
-        full_response = []
+        full_text = []
         script_outputs = []
 
         async for message in self.client.receive_response():
             if isinstance(message, AssistantMessage):
                 for block in message.content:
-                    if isinstance(block, TextBlock):
+                    if isinstance(block, ToolUseBlock):
+                        # Show tool being called
+                        tool_info = f"{Colors.CYAN}[{block.name}]{Colors.RESET}"
+                        if block.name == "Read":
+                            tool_info += f" {Colors.DIM}{block.input.get('file_path', '')}{Colors.RESET}"
+                        elif block.name == "Grep":
+                            tool_info += f" {Colors.DIM}{block.input.get('pattern', '')}{Colors.RESET}"
+                        elif block.name == "Glob":
+                            tool_info += f" {Colors.DIM}{block.input.get('pattern', '')}{Colors.RESET}"
+                        print(tool_info)
+
+                    elif isinstance(block, TextBlock):
                         text = block.text
-                        full_response.append(text)
+                        full_text.append(text)
 
-                        # Check for <idascript> blocks
-                        matches = IDASCRIPT_PATTERN.findall(text)
-                        for script_code in matches:
-                            output = self.execute_script(script_code.strip())
-                            if output:
-                                script_outputs.append(output)
+                        # Print text that's not inside <idascript> tags
+                        cleaned = IDASCRIPT_PATTERN.sub("", text).strip()
+                        if cleaned:
+                            print(cleaned)
 
-        # Build final output
-        result_parts = []
+            elif isinstance(message, ResultMessage):
+                print()  # New line after streaming
 
-        if self.verbose:
-            # Show full agent response
-            result_parts.append("".join(full_response))
+                # Now check for and execute any scripts in the final text
+                if full_text:
+                    combined = "".join(full_text)
+                    matches = IDASCRIPT_PATTERN.findall(combined)
+                    for script_code in matches:
+                        print(f"{Colors.YELLOW}[Executing script...]{Colors.RESET}")
+                        output = self.execute_script(script_code.strip())
+                        if output:
+                            script_outputs.append(output)
 
-        if script_outputs:
-            if self.verbose:
-                result_parts.append("\n--- Script Output ---")
-            result_parts.extend(script_outputs)
+                if self.verbose:
+                    print(f"{Colors.DIM}[Turns: {message.num_turns}, Cost: ${message.total_cost_usd or 0:.4f}]{Colors.RESET}")
 
-        return "\n".join(result_parts) if result_parts else "(no output)"
+        # Return script output
+        return "\n".join(script_outputs) if script_outputs else ""
 
     async def run_interactive(self):
         """Run interactive chat loop."""

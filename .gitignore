@@ -1,9 +1,14 @@
 # Build artifacts
 *.zip
 
-# IDA databases (test files)
+# IDA databases and temp files
 *.i64
 *.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
 
 # Python
 __pycache__/

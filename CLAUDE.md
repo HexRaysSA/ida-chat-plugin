@@ -4,7 +4,7 @@ Chat interface for IDA Pro powered by Claude Agent SDK.
 
 ## Components
 
-### 1. CLI Tool (`idachat.py`)
+### 1. CLI Tool (`ida_chat_cli.py`)
 
 Standalone command-line chat for testing outside IDA:
 
@@ -20,7 +20,7 @@ uv run python idachat.py <binary.i64> -p "..."  # Single prompt
 4. CLI extracts scripts and runs `exec(code, {"db": db})` against the open database
 5. Output is captured and displayed
 
-### 2. IDA Plugin (`ida_chat.py`)
+### 2. IDA Plugin (`ida_chat_plugin.py`)
 
 Dockable chat widget inside IDA Pro (Ctrl+Shift+C to toggle).
 
@@ -52,7 +52,7 @@ The host (CLI or plugin) parses these tags and executes the code against the ope
 uv sync
 
 # Test CLI
-uv run python idachat.py calc.exe.i64 -p "list functions"
+uv run python ida_chat_cli.py calc.exe.i64 -p "list functions"
 
 # Install plugin to IDA
 cd ~/.claude/plugins/cache/ida-claude-plugins/ida-plugin/1.0.0/skills/ida-plugin

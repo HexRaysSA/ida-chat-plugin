@@ -4,7 +4,7 @@
     "name": "ida-chat",
     "version": "1.0.0",
     "description": "LLM Chat Client for IDA Pro - A dockable chat interface for AI-powered reverse engineering assistance",
-    "entryPoint": "ida_chat.py",
+    "entryPoint": "ida_chat_plugin.py",
     "authors": [
       {
         "name": "IDA Chat Developer",
