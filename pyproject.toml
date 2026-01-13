@@ -46,6 +46,7 @@ release-patch = "semantic-release version --patch --no-changelog"
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
+version_variables = ["ida-plugin.json:plugin.version"]
 build_command = "uv lock --upgrade-package ida-chat && uv build"
 dist_path = "dist/"
 major_on_zero = false

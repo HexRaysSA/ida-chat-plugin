@@ -72,9 +72,25 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.publish.outputs.tag }}
+
+      - name: Create IDA plugin zip
+        run: |
+          zip -r ida-chat.zip \
+            ida-plugin.json \
+            ida_chat_plugin.py \
+            ida_chat_core.py \
+            ida_chat_history.py \
+            splash.png \
+            project/
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ needs.publish.outputs.tag }}
           makeLatest: true
           generateReleaseNotes: true
+          artifacts: ida-chat.zip

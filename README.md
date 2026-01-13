@@ -19,8 +19,13 @@ An AI-powered chat interface for IDA Pro using Claude Agent SDK. Ask questions a
 
 ## Installation
 
-1. Download the latest release (`ida-chat.zip`) from the [releases page](https://github.com/HexRaysSA/ida-chat-plugin/releases)
+Install directly with hcli:
+```bash
+hcli plugin install ida-chat
+```
 
+Alternatively, download and install from a release:
+1. Download the latest release (`ida-chat.zip`) from the [releases page](https://github.com/HexRaysSA/ida-chat-plugin/releases)
 2. Install with hcli:
    ```bash
    hcli plugin install ida-chat.zip
