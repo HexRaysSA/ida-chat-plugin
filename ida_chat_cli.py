@@ -15,6 +15,10 @@ import tempfile
 import webbrowser
 from pathlib import Path
 
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.syntax import Syntax
+
 # Ensure local modules are importable
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
@@ -37,6 +41,9 @@ class Colors:
 class CLICallback(ChatCallback):
     """Terminal output implementation of ChatCallback."""
 
+    def __init__(self):
+        self.console = Console()
+
     def on_turn_start(self, turn: int, max_turns: int) -> None:
         pass  # Don't display turn info in UI
 
@@ -54,17 +61,16 @@ class CLICallback(ChatCallback):
         print(tool_info)
 
     def on_text(self, text: str) -> None:
-        print(text)
+        self.console.print(Markdown(text))
 
     def on_script_code(self, code: str) -> None:
-        # Show script code with syntax highlighting hint
         print(f"{Colors.YELLOW}[Executing script]{Colors.RESET}")
-        # Show first few lines of the script
+        # Show first 10 lines with syntax highlighting
         lines = code.strip().split('\n')
-        preview = '\n'.join(lines[:5])
-        if len(lines) > 5:
-            preview += f"\n{Colors.DIM}... ({len(lines) - 5} more lines){Colors.RESET}"
-        print(f"{Colors.DIM}{preview}{Colors.RESET}")
+        preview = '\n'.join(lines[:10])
+        self.console.print(Syntax(preview, "python", theme="monokai", line_numbers=False))
+        if len(lines) > 10:
+            print(f"{Colors.DIM}... ({len(lines) - 10} more lines){Colors.RESET}")
 
     def on_script_output(self, output: str) -> None:
         print(f"{Colors.GREEN}{output}{Colors.RESET}")

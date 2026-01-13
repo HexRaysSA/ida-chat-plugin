@@ -13,6 +13,7 @@ dependencies = [
     "ida-domain",
     "ida-settings>=3.3.0",
     "claude-code-transcripts",
+    "rich",
 ]
 
 [project.urls]
