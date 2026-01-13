@@ -12,6 +12,7 @@ dependencies = [
     "claude-agent-sdk",
     "ida-domain",
     "ida-settings>=3.3.0",
+    "claude-code-transcripts",
 ]
 
 [project.urls]
@@ -29,7 +30,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
-only-include = ["ida_chat_cli.py", "ida_chat_core.py"]
+only-include = ["ida_chat_cli.py", "ida_chat_core.py", "ida_chat_history.py"]
 
 [project.optional-dependencies]
 dev = [

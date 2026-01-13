@@ -11,7 +11,8 @@
     "pythonDependencies": [
       "claude-agent-sdk",
       "ida-domain",
-      "ida-settings"
+      "ida-settings",
+      "claude-code-transcripts"
     ],
     "urls": {
       "repository": "https://github.com/HexRaysSA/ida-chat-plugin"
