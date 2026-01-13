@@ -3,11 +3,21 @@ name = "ida-chat"
 version = "0.2.1"
 description = "CLI chat interface for IDA Pro using Claude Agent SDK"
 requires-python = ">=3.10"
+license = "MIT"
+keywords = ["ida", "ida-pro", "reverse-engineering", "disassembler", "binary-analysis", "ai", "claude", "llm"]
+authors = [
+    { name = "Hex-Rays SA", email = "support@hex-rays.com" }
+]
 dependencies = [
     "claude-agent-sdk",
     "ida-domain",
     "ida-settings>=3.3.0",
 ]
+
+[project.urls]
+Homepage = "https://hex-rays.com/"
+Repository = "https://github.com/HexRaysSA/ida-chat-plugin"
+Issues = "https://github.com/HexRaysSA/ida-chat-plugin/issues"
 
 [project.scripts]
 ida-chat = "ida_chat_cli:main"
