@@ -36,14 +36,14 @@ from claude_agent_sdk import (
 )
 
 
-# Context directory for agent SDK (contains PROMPT.md, USAGE.md, API_REFERENCE.md)
-CONTEXT_DIR = Path(__file__).parent.resolve() / "context"
+# Project directory for agent SDK (contains PROMPT.md, USAGE.md, API_REFERENCE.md)
+PROJECT_DIR = Path(__file__).parent.resolve() / "project"
 
 # Regex to extract <idascript>...</idascript> blocks
 IDASCRIPT_PATTERN = re.compile(r"<idascript>(.*?)</idascript>", re.DOTALL)
 
 # Prompt file location
-PROMPT_FILE = CONTEXT_DIR / "PROMPT.md"
+PROMPT_FILE = PROJECT_DIR / "PROMPT.md"
 
 
 def _load_system_prompt() -> str:
@@ -147,10 +147,10 @@ class IDAChatCore:
         """Initialize and connect the Agent SDK client."""
         logger.info("=" * 60)
         logger.info("Connecting to Claude Agent SDK")
-        logger.info(f"CWD: {CONTEXT_DIR}")
+        logger.info(f"CWD: {PROJECT_DIR}")
 
         options = ClaudeAgentOptions(
-            cwd=str(CONTEXT_DIR),
+            cwd=str(PROJECT_DIR),
             setting_sources=["project"],
             allowed_tools=["Read", "Glob", "Grep", "Task"],
             permission_mode="bypassPermissions",

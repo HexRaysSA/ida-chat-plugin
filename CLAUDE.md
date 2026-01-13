@@ -8,7 +8,7 @@ Chat interface for IDA Pro powered by Claude Agent SDK.
 ida_chat_core.py      # Shared: Agent SDK, script execution, agentic loop
 ida_chat_cli.py       # CLI: terminal I/O, arg parsing
 ida_chat_plugin.py    # Plugin: Qt UI, IDA integration, markdown rendering
-context/              # Agent working directory
+project/              # Agent working directory
   PROMPT.md           # System prompt (loaded at runtime)
   USAGE.md            # API usage patterns and tips
   API_REFERENCE.md    # Complete ida-domain API reference
@@ -98,7 +98,7 @@ uv sync
 uv run python ida_chat_cli.py calc.exe.i64 -p "list 3 functions"
 
 # Install plugin to IDA
-zip -r ida-chat.zip ida-plugin.json ida_chat_plugin.py ida_chat_core.py context/
+zip -r ida-chat.zip ida-plugin.json ida_chat_plugin.py ida_chat_core.py project/
 hcli plugin install ida-chat.zip
 ```
 
