@@ -6,6 +6,7 @@ AI-assisted reverse engineering within IDA Pro.
 """
 
 import asyncio
+import re
 import sys
 from io import StringIO
 from pathlib import Path
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
-from PySide6.QtGui import QKeyEvent, QPalette
+from PySide6.QtGui import QKeyEvent, QPalette, QFont
 
 # Ensure local modules are importable
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
@@ -71,6 +72,56 @@ def get_ida_colors():
     }
 
 
+def markdown_to_html(text: str) -> str:
+    """Convert markdown to HTML for display in QLabel with rich text."""
+    import html
+
+    # Escape HTML first
+    text = html.escape(text)
+
+    # Code blocks (``` ... ```) - must be before inline code
+    def replace_code_block(match):
+        code = match.group(1)
+        return f'<pre style="background-color: #2d2d2d; color: #f8f8f2; padding: 8px; border-radius: 4px; overflow-x: auto;"><code>{code}</code></pre>'
+    text = re.sub(r'```(?:\w*\n)?(.*?)```', replace_code_block, text, flags=re.DOTALL)
+
+    # Inline code (`code`)
+    text = re.sub(r'`([^`]+)`', r'<code style="background-color: #3d3d3d; padding: 2px 4px; border-radius: 3px;">\1</code>', text)
+
+    # Headers
+    text = re.sub(r'^### (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
+    text = re.sub(r'^## (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
+    text = re.sub(r'^# (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+
+    # Bold (**text** or __text__)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+
+    # Italic (*text* or _text_) - careful not to match inside words
+    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'<i>\1</i>', text)
+
+    # Links [text](url)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+
+    # Bullet lists (- item or * item)
+    text = re.sub(r'^[\-\*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+    # Wrap consecutive <li> in <ul>
+    text = re.sub(r'((?:<li>.*?</li>\n?)+)', r'<ul>\1</ul>', text)
+
+    # Numbered lists (1. item)
+    text = re.sub(r'^\d+\. (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+
+    # Line breaks - convert newlines to <br> (but not inside pre/code blocks)
+    # Simple approach: just convert remaining newlines
+    text = text.replace('\n', '<br>')
+
+    # Clean up multiple <br> tags
+    text = re.sub(r'(<br>){3,}', '<br><br>', text)
+
+    return text
+
+
 class ChatMessage(QFrame):
     """A single chat message bubble with optional status indicator."""
 
@@ -90,16 +141,14 @@ class ChatMessage(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        # Create message label
-        self.message_widget = QLabel(text)
-        self.message_widget.setWordWrap(True)
-        self.message_widget.setTextInteractionFlags(
-            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
-        )
-        self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-
         if self.is_user:
-            # User message - right aligned, accent color background
+            # User message - right aligned, accent color background, plain QLabel
+            self.message_widget = QLabel(text)
+            self.message_widget.setWordWrap(True)
+            self.message_widget.setTextInteractionFlags(
+                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+            )
+            self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             layout.addStretch()
             self.message_widget.setStyleSheet(f"""
                 QLabel {{
@@ -114,11 +163,20 @@ class ChatMessage(QFrame):
             # Status indicator for assistant messages (small dot)
             self._status_indicator = QLabel("●")
             self._status_indicator.setFixedWidth(16)
-            self._status_indicator.setAlignment(Qt.AlignCenter)
+            self._status_indicator.setAlignment(Qt.AlignCenter | Qt.AlignTop)
             self._update_indicator_style()
             layout.addWidget(self._status_indicator)
 
-            # Assistant message - left aligned, alternate base color
+            # Assistant message - QLabel with rich text for markdown
+            self.message_widget = QLabel()
+            self.message_widget.setTextFormat(Qt.RichText)
+            self.message_widget.setText(markdown_to_html(text))
+            self.message_widget.setWordWrap(True)
+            self.message_widget.setTextInteractionFlags(
+                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
+            )
+            self.message_widget.setOpenExternalLinks(True)
+            self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             self.message_widget.setStyleSheet(f"""
                 QLabel {{
                     background-color: {colors['alt_base']};
@@ -127,6 +185,7 @@ class ChatMessage(QFrame):
                     padding: 8px 12px;
                 }}
             """)
+
             layout.addWidget(self.message_widget)
             layout.addStretch()
 
@@ -174,7 +233,10 @@ class ChatMessage(QFrame):
 
     def update_text(self, text: str):
         """Update the message text."""
-        self.message_widget.setText(text)
+        if self.is_user:
+            self.message_widget.setText(text)
+        else:
+            self.message_widget.setText(markdown_to_html(text))
 
 
 class ChatHistoryWidget(QScrollArea):
