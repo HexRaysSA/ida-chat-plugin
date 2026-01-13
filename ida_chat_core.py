@@ -128,8 +128,14 @@ class IDAChatCore:
         self.verbose = verbose
         self.max_turns = max_turns
         self.client: ClaudeSDKClient | None = None
+        self._cancelled = False
         # Use injected executor or default to direct execution
         self._execute_script = script_executor or self._default_execute_script
+
+    def request_cancel(self) -> None:
+        """Request cancellation of the current operation."""
+        self._cancelled = True
+        logger.info("Cancel requested")
 
     async def connect(self) -> None:
         """Initialize and connect the Agent SDK client."""
@@ -288,8 +294,14 @@ class IDAChatCore:
         current_input = user_input
         all_script_outputs: list[str] = []
         turn = 0
+        self._cancelled = False
 
         while turn < self.max_turns:
+            # Check for cancellation
+            if self._cancelled:
+                logger.info("Operation cancelled by user")
+                self.callback.on_error("Operation cancelled")
+                break
             turn += 1
             logger.info(f"=== TURN {turn}/{self.max_turns} ===")
             self.callback.on_turn_start(turn, self.max_turns)

@@ -72,6 +72,92 @@ def get_ida_colors():
     }
 
 
+class CollapsibleSection(QFrame):
+    """Expandable/collapsible section for long content."""
+
+    # Threshold for collapsing (lines)
+    COLLAPSE_THRESHOLD = 10
+
+    def __init__(self, title: str, content: str, collapsed: bool = True, parent=None):
+        super().__init__(parent)
+        self._collapsed = collapsed
+        self._title = title
+        self._content = content
+        self._setup_ui()
+
+    def _setup_ui(self):
+        colors = get_ida_colors()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Header with toggle button
+        self.header = QPushButton()
+        self._update_header_text()
+        self.header.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {colors['mid']};
+                border: none;
+                text-align: left;
+                padding: 2px 4px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                color: {colors['text']};
+            }}
+        """)
+        self.header.clicked.connect(self._toggle)
+        layout.addWidget(self.header)
+
+        # Content area
+        self.content_label = QLabel()
+        self.content_label.setTextFormat(Qt.RichText)
+        self.content_label.setWordWrap(True)
+        self.content_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
+        self.content_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {colors['alt_base']};
+                color: {colors['text']};
+                padding: 8px;
+                border-radius: 4px;
+                font-family: monospace;
+                font-size: 11px;
+            }}
+        """)
+        self._update_content()
+        layout.addWidget(self.content_label)
+
+    def _update_header_text(self):
+        arrow = "▶" if self._collapsed else "▼"
+        line_count = len(self._content.strip().split('\n'))
+        self.header.setText(f"{arrow} {self._title} ({line_count} lines)")
+
+    def _update_content(self):
+        if self._collapsed:
+            # Show first few lines with ellipsis
+            lines = self._content.strip().split('\n')
+            preview = '\n'.join(lines[:3])
+            if len(lines) > 3:
+                preview += f"\n... ({len(lines) - 3} more lines)"
+            self.content_label.setText(f"<pre>{preview}</pre>")
+        else:
+            self.content_label.setText(f"<pre>{self._content}</pre>")
+
+    def _toggle(self):
+        self._collapsed = not self._collapsed
+        self._update_header_text()
+        self._update_content()
+
+    @staticmethod
+    def should_collapse(content: str) -> bool:
+        """Check if content should be collapsed."""
+        return len(content.strip().split('\n')) > CollapsibleSection.COLLAPSE_THRESHOLD
+
+
 def markdown_to_html(text: str) -> str:
     """Convert markdown to HTML for display in QLabel with rich text."""
     import html
@@ -122,13 +208,87 @@ def markdown_to_html(text: str) -> str:
     return text
 
 
+class MessageType:
+    """Message type constants for visual differentiation."""
+    TEXT = "text"           # Normal assistant text
+    TOOL_USE = "tool_use"   # Tool invocation (muted, italic)
+    SCRIPT = "script"       # Script code (monospace, dark bg)
+    OUTPUT = "output"       # Script output (monospace, gray bg)
+    ERROR = "error"         # Error message (red accent)
+    USER = "user"           # User message
+
+
+class ProgressTimeline(QFrame):
+    """Compact progress timeline showing agent stages."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stages: list[str] = []
+        self._current_stage = -1
+        self._setup_ui()
+
+    def _setup_ui(self):
+        colors = get_ida_colors()
+        self.setStyleSheet(f"background-color: {colors['window']};")
+
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(10, 4, 10, 4)
+        self.layout.setSpacing(4)
+
+        self.timeline_label = QLabel("")
+        self.timeline_label.setStyleSheet(f"color: {colors['mid']}; font-size: 10px;")
+        self.layout.addWidget(self.timeline_label)
+        self.layout.addStretch()
+
+        self.setVisible(False)
+
+    def reset(self):
+        """Reset the timeline for a new conversation."""
+        self._stages = ["User"]
+        self._current_stage = 0
+        self._update_display()
+        self.setVisible(True)
+
+    def add_stage(self, name: str):
+        """Add a new stage to the timeline."""
+        self._stages.append(name)
+        self._current_stage = len(self._stages) - 1
+        self._update_display()
+
+    def complete(self):
+        """Mark the timeline as complete."""
+        if "Done" not in self._stages:
+            self._stages.append("Done")
+        self._current_stage = len(self._stages) - 1
+        self._update_display()
+
+    def hide_timeline(self):
+        """Hide the timeline."""
+        self.setVisible(False)
+
+    def _update_display(self):
+        """Update the timeline display."""
+        parts = []
+        for i, stage in enumerate(self._stages):
+            if i == self._current_stage:
+                parts.append(f"<b style='color: #f59e0b;'>{stage}</b>")
+            elif i < self._current_stage:
+                parts.append(f"<span style='color: #22c55e;'>✓ {stage}</span>")
+            else:
+                parts.append(f"<span>{stage}</span>")
+
+        self.timeline_label.setText(" → ".join(parts))
+
+
 class ChatMessage(QFrame):
     """A single chat message bubble with optional status indicator."""
 
-    def __init__(self, text: str, is_user: bool = True, is_processing: bool = False, parent=None):
+    def __init__(self, text: str, is_user: bool = True, is_processing: bool = False,
+                 msg_type: str = MessageType.TEXT, parent=None):
         super().__init__(parent)
         self.is_user = is_user
         self._is_processing = is_processing
+        self._msg_type = msg_type if not is_user else MessageType.USER
         self._blink_visible = True
         self._blink_timer = None
         self._status_indicator = None
@@ -170,21 +330,74 @@ class ChatMessage(QFrame):
             # Assistant message - QLabel with rich text for markdown
             self.message_widget = QLabel()
             self.message_widget.setTextFormat(Qt.RichText)
-            self.message_widget.setText(markdown_to_html(text))
             self.message_widget.setWordWrap(True)
             self.message_widget.setTextInteractionFlags(
                 Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
             )
             self.message_widget.setOpenExternalLinks(True)
             self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            self.message_widget.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {colors['alt_base']};
-                    color: {colors['text']};
-                    border-radius: 10px;
-                    padding: 8px 12px;
-                }}
-            """)
+
+            # Apply type-specific styling
+            if self._msg_type == MessageType.TOOL_USE:
+                # Tool use - muted, italic
+                self.message_widget.setText(f"<i>{text}</i>")
+                self.message_widget.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: transparent;
+                        color: {colors['mid']};
+                        padding: 4px 8px;
+                        font-size: 11px;
+                    }}
+                """)
+            elif self._msg_type == MessageType.SCRIPT:
+                # Script code - monospace, dark background
+                self.message_widget.setText(f"<pre style='margin: 0;'>{text}</pre>")
+                self.message_widget.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: #1e1e1e;
+                        color: #d4d4d4;
+                        border-radius: 6px;
+                        padding: 8px 12px;
+                        font-family: monospace;
+                        font-size: 11px;
+                    }}
+                """)
+            elif self._msg_type == MessageType.OUTPUT:
+                # Script output - monospace, gray background
+                self.message_widget.setText(f"<pre style='margin: 0;'>{text}</pre>")
+                self.message_widget.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: #2d2d2d;
+                        color: #a0a0a0;
+                        border-radius: 6px;
+                        padding: 8px 12px;
+                        font-family: monospace;
+                        font-size: 11px;
+                    }}
+                """)
+            elif self._msg_type == MessageType.ERROR:
+                # Error - red accent
+                self.message_widget.setText(markdown_to_html(text))
+                self.message_widget.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: #2d1f1f;
+                        color: #f87171;
+                        border: 1px solid #dc2626;
+                        border-radius: 10px;
+                        padding: 8px 12px;
+                    }}
+                """)
+            else:
+                # Default text styling
+                self.message_widget.setText(markdown_to_html(text))
+                self.message_widget.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {colors['alt_base']};
+                        color: {colors['text']};
+                        border-radius: 10px;
+                        padding: 8px 12px;
+                    }}
+                """)
 
             layout.addWidget(self.message_widget)
             layout.addStretch()
@@ -263,9 +476,10 @@ class ChatHistoryWidget(QScrollArea):
 
         self.setWidget(self.container)
 
-    def add_message(self, text: str, is_user: bool = True, is_processing: bool = False) -> ChatMessage:
+    def add_message(self, text: str, is_user: bool = True, is_processing: bool = False,
+                    msg_type: str = MessageType.TEXT) -> ChatMessage:
         """Add a message to the chat history."""
-        message = ChatMessage(text, is_user, is_processing)
+        message = ChatMessage(text, is_user, is_processing, msg_type)
         self.layout.addWidget(message)
 
         # Track processing message
@@ -286,6 +500,13 @@ class ChatHistoryWidget(QScrollArea):
         QTimer.singleShot(10, lambda: self.verticalScrollBar().setValue(
             self.verticalScrollBar().maximum()
         ))
+
+    def add_collapsible(self, title: str, content: str, collapsed: bool = True) -> CollapsibleSection:
+        """Add a collapsible section to the chat history."""
+        section = CollapsibleSection(title, content, collapsed)
+        self.layout.addWidget(section)
+        self.scroll_to_bottom()
+        return section
 
     def clear_history(self):
         """Clear all messages from the chat history."""
@@ -409,6 +630,7 @@ class AgentWorker(QThread):
         self._pending_message: str | None = None
         self._should_connect = False
         self._should_disconnect = False
+        self._should_cancel = False
         self._running = True
 
     def request_connect(self):
@@ -421,6 +643,12 @@ class AgentWorker(QThread):
         """Request disconnection from agent."""
         self._should_disconnect = True
         self._running = False
+
+    def request_cancel(self):
+        """Request cancellation of current operation."""
+        self._should_cancel = True
+        if self.core:
+            self.core.request_cancel()
 
     def send_message(self, message: str):
         """Queue a message to be sent to the agent."""
@@ -487,6 +715,12 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.worker: AgentWorker | None = None
         self._is_processing = False
         self._current_message = None  # Track current blinking message
+        self._current_turn = 0
+        self._max_turns = 20
+        self._total_cost = 0.0
+        self._script_count = 0
+        self._last_had_error = False
+        self._summary_mode = False  # False = detailed, True = summary
         self._create_ui()
         self._init_agent()
 
@@ -534,6 +768,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
             self.worker.signals.script_code.connect(self._on_script_code)
             self.worker.signals.script_output.connect(self._on_script_output)
             self.worker.signals.error.connect(self._on_error)
+            self.worker.signals.result.connect(self._on_result)
             self.worker.signals.finished.connect(self._on_finished)
 
             # Start connection
@@ -552,7 +787,10 @@ class IDAChatForm(ida_kernwin.PluginForm):
 
     def _on_turn_start(self, turn: int, max_turns: int):
         """Called at the start of each agentic turn."""
-        pass  # Don't display turn info in UI
+        self._current_turn = turn
+        self._max_turns = max_turns
+        self.status_label.setText(f"Turn {turn}/{max_turns}")
+        self.cancel_btn.setVisible(True)
 
     def _on_thinking(self):
         """Called when agent starts processing."""
@@ -561,8 +799,23 @@ class IDAChatForm(ida_kernwin.PluginForm):
         if self._current_message:
             self._current_message.set_complete()
         self.input_widget.setEnabled(False)
-        # Add thinking message with blinking indicator
-        self._current_message = self.chat_history.add_message("[Thinking...]", is_user=False, is_processing=True)
+
+        # Check if this is a retry after error
+        if self._last_had_error:
+            self._last_had_error = False
+            # Update timeline
+            self.progress_timeline.add_stage("Retrying")
+            # Add retry message
+            self._current_message = self.chat_history.add_message(
+                "🔄 Retrying after error...", is_user=False, is_processing=True
+            )
+        else:
+            # Update timeline
+            self.progress_timeline.add_stage("Thinking")
+            # Add thinking message with blinking indicator
+            self._current_message = self.chat_history.add_message(
+                "[Thinking...]", is_user=False, is_processing=True
+            )
 
     def _on_thinking_done(self):
         """Called when agent produces first output."""
@@ -573,20 +826,25 @@ class IDAChatForm(ida_kernwin.PluginForm):
                 item.widget().deleteLater()
         self._current_message = None
 
-    def _add_processing_message(self, text: str) -> None:
+    def _add_processing_message(self, text: str, msg_type: str = MessageType.TEXT) -> None:
         """Add a new processing message, marking previous one as complete."""
         # Mark previous message as complete (green)
         if self._current_message:
             self._current_message.set_complete()
         # Add new blinking message
-        self._current_message = self.chat_history.add_message(text, is_user=False, is_processing=True)
+        self._current_message = self.chat_history.add_message(
+            text, is_user=False, is_processing=True, msg_type=msg_type
+        )
 
     def _on_tool_use(self, tool_name: str, details: str):
         """Called when agent uses a tool."""
+        # Skip tool use messages in summary mode
+        if self._summary_mode:
+            return
         tool_msg = f"[{tool_name}]"
         if details:
             tool_msg += f" {details}"
-        self._add_processing_message(tool_msg)
+        self._add_processing_message(tool_msg, MessageType.TOOL_USE)
 
     def _on_text(self, text: str):
         """Called when agent outputs text."""
@@ -595,26 +853,61 @@ class IDAChatForm(ida_kernwin.PluginForm):
 
     def _on_script_code(self, code: str):
         """Called with script code before execution."""
+        import html
+        # Update timeline
+        self._script_count += 1
+        self.progress_timeline.add_stage(f"Script {self._script_count}")
+        # Update status to show running script
+        self.status_label.setText(f"Turn {self._current_turn}/{self._max_turns} • Running script {self._script_count}...")
+        # Skip script code in summary mode
+        if self._summary_mode:
+            return
         # Show preview of the script
         lines = code.strip().split('\n')
         preview = '\n'.join(lines[:5])
         if len(lines) > 5:
             preview += f"\n... ({len(lines) - 5} more lines)"
-        self._add_processing_message(f"[Executing script]\n{preview}")
+        self._add_processing_message(html.escape(preview), MessageType.SCRIPT)
 
     def _on_script_output(self, output: str):
         """Called with script output."""
         if output.strip():
-            self._add_processing_message(output)
+            import html
+            # Check if this is an error output
+            is_error = output.strip().startswith("Script error:")
+            if is_error:
+                self._last_had_error = True
+                # Always show errors, even in summary mode
+                self._add_processing_message(output, MessageType.ERROR)
+            elif self._summary_mode:
+                # Skip normal output in summary mode
+                return
+            # Use collapsible section for long outputs
+            elif CollapsibleSection.should_collapse(output):
+                # Mark previous message as complete
+                if self._current_message:
+                    self._current_message.set_complete()
+                self.chat_history.add_collapsible("Script Output", output, collapsed=True)
+                self._current_message = None
+            else:
+                self._add_processing_message(html.escape(output), MessageType.OUTPUT)
 
     def _on_error(self, error: str):
         """Called when an error occurs."""
-        self._add_processing_message(f"Error: {error}")
+        self._add_processing_message(f"Error: {error}", MessageType.ERROR)
+
+    def _on_result(self, num_turns: int, cost: float):
+        """Called when agent returns result with stats."""
+        self._total_cost += cost
+        self.cost_label.setText(f"${self._total_cost:.4f}")
 
     def _on_finished(self):
         """Called when agent finishes processing."""
         self._is_processing = False
         self.input_widget.setEnabled(True)
+        self.cancel_btn.setVisible(False)
+        self.status_label.setText("Ready")
+        self.progress_timeline.complete()
         # Mark the last message as complete (green)
         if self._current_message:
             self._current_message.set_complete()
@@ -659,6 +952,25 @@ class IDAChatForm(ida_kernwin.PluginForm):
         clear_btn.clicked.connect(self._on_clear)
         header_layout.addWidget(clear_btn)
 
+        # View mode toggle button
+        self.view_mode_btn = QPushButton("Detailed")
+        self.view_mode_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {colors['mid']};
+                border: 1px solid {colors['mid']};
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{
+                color: {colors['window_text']};
+                border-color: {colors['window_text']};
+            }}
+        """)
+        self.view_mode_btn.clicked.connect(self._on_toggle_view_mode)
+        header_layout.addWidget(self.view_mode_btn)
+
         layout.addWidget(header)
 
         # Separator
@@ -667,6 +979,10 @@ class IDAChatForm(ida_kernwin.PluginForm):
         separator.setStyleSheet(f"background-color: {colors['mid']};")
         separator.setFixedHeight(1)
         layout.addWidget(separator)
+
+        # Progress timeline (hidden by default)
+        self.progress_timeline = ProgressTimeline()
+        layout.addWidget(self.progress_timeline)
 
         # Chat history area (takes most space)
         self.chat_history = ChatHistoryWidget()
@@ -683,7 +999,42 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.input_widget.message_submitted.connect(self._on_message_submitted)
         input_layout.addWidget(self.input_widget, stretch=1)
 
+        # Cancel button (hidden by default)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #dc2626;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: #b91c1c;
+            }}
+        """)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        self.cancel_btn.setVisible(False)
+        input_layout.addWidget(self.cancel_btn)
+
         layout.addWidget(input_container)
+
+        # Status bar at bottom
+        self.status_bar = QWidget()
+        status_layout = QHBoxLayout(self.status_bar)
+        status_layout.setContentsMargins(10, 4, 10, 4)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet(f"color: {colors['mid']}; font-size: 11px;")
+        status_layout.addWidget(self.status_label)
+
+        status_layout.addStretch()
+
+        self.cost_label = QLabel("")
+        self.cost_label.setStyleSheet(f"color: {colors['mid']}; font-size: 11px;")
+        status_layout.addWidget(self.cost_label)
+
+        layout.addWidget(self.status_bar)
 
         self.parent.setLayout(layout)
 
@@ -708,15 +1059,38 @@ class IDAChatForm(ida_kernwin.PluginForm):
         if not self.worker or self._is_processing:
             return
 
+        # Reset timeline for new conversation
+        self.progress_timeline.reset()
+        self._script_count = 0
+        self._last_had_error = False
+
         # Add user message to chat
         self.chat_history.add_message(text, is_user=True)
 
         # Send to agent
         self.worker.send_message(text)
 
+    def _on_cancel(self):
+        """Cancel the current agent operation."""
+        if self.worker and self._is_processing:
+            self.worker.request_cancel()
+            self.status_label.setText("Cancelling...")
+
+    def _on_toggle_view_mode(self):
+        """Toggle between detailed and summary view modes."""
+        self._summary_mode = not self._summary_mode
+        if self._summary_mode:
+            self.view_mode_btn.setText("Summary")
+        else:
+            self.view_mode_btn.setText("Detailed")
+
     def _on_clear(self):
         """Clear the chat history."""
         self.chat_history.clear_history()
+        self._total_cost = 0.0
+        self._script_count = 0
+        self.cost_label.setText("")
+        self.progress_timeline.hide_timeline()
         self._add_welcome_message()
 
     def OnClose(self, form):
