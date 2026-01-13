@@ -6,6 +6,7 @@ and message processing used by both the CLI and IDA plugin.
 """
 
 import logging
+import os
 import re
 import sys
 from io import StringIO
@@ -42,17 +43,34 @@ PROJECT_DIR = Path(__file__).parent.resolve() / "project"
 # Regex to extract <idascript>...</idascript> blocks
 IDASCRIPT_PATTERN = re.compile(r"<idascript>(.*?)</idascript>", re.DOTALL)
 
-# Prompt file location
+# Prompt file locations
 PROMPT_FILE = PROJECT_DIR / "PROMPT.md"
+IDA_UI_FILE = PROJECT_DIR / "IDA.md"
 
 
 def _load_system_prompt() -> str:
-    """Load the system prompt from PROMPT.md."""
+    """Load the system prompt from PROMPT.md.
+
+    If running inside IDA Pro (IDA_CHAT_INSIDE_IDA env var is set),
+    also appends IDA.md which contains the user interaction API.
+    """
+    prompt = ""
+
     if PROMPT_FILE.exists():
-        return PROMPT_FILE.read_text()
-    # Fallback if file not found
-    logger.warning(f"PROMPT.md not found at {PROMPT_FILE}")
-    return "You have access to an open IDA database via the `db` variable. Use <idascript> tags for code."
+        prompt = PROMPT_FILE.read_text()
+    else:
+        logger.warning(f"PROMPT.md not found at {PROMPT_FILE}")
+        prompt = "You have access to an open IDA database via the `db` variable. Use <idascript> tags for code."
+
+    # Append IDA UI interaction API when running inside IDA
+    if os.environ.get("IDA_CHAT_INSIDE_IDA") == "1":
+        if IDA_UI_FILE.exists():
+            logger.info("Running inside IDA - appending IDA.md to system prompt")
+            prompt += "\n\n" + IDA_UI_FILE.read_text()
+        else:
+            logger.warning(f"IDA.md not found at {IDA_UI_FILE}")
+
+    return prompt
 
 
 async def test_claude_connection() -> tuple[bool, str]:

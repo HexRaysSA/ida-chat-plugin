@@ -10,6 +10,9 @@ import os
 import re
 import sys
 from io import StringIO
+
+# Signal to core that we're running inside IDA Pro (enables UI interaction API)
+os.environ["IDA_CHAT_INSIDE_IDA"] = "1"
 from pathlib import Path
 from typing import Callable
 

@@ -94,13 +94,29 @@ The core module parses these tags and executes the code against the open `db` in
 # Install dependencies
 uv sync
 
-# Test CLI
+# Test CLI (outside IDA)
 uv run python ida_chat_cli.py calc.exe.i64 -p "list 3 functions"
-
-# Install plugin to IDA
-zip -r ida-chat.zip ida-plugin.json ida_chat_plugin.py ida_chat_core.py project/
-hcli plugin install ida-chat.zip
 ```
+
+### Deploying the Plugin to IDA
+
+The plugin must be packaged as a zip and installed via `hcli`. **Close IDA before redeploying.**
+
+```bash
+# Redeploy plugin (uninstall old, install new)
+rm -f ida-chat.zip && \
+zip -r ida-chat.zip ida-plugin.json ida_chat_plugin.py ida_chat_core.py ida_chat_history.py splash.png project/ && \
+hcli plugin uninstall ida-chat && \
+hcli plugin install ida-chat.zip --config show_wizard=true --config auth_type=system --config api_key=
+```
+
+**Files included in the plugin zip:**
+- `ida-plugin.json` - Plugin manifest
+- `ida_chat_plugin.py` - IDA plugin (Qt UI)
+- `ida_chat_core.py` - Shared core module
+- `ida_chat_history.py` - Message history persistence
+- `splash.png` - Onboarding splash image
+- `project/` - Agent prompts and documentation (PROMPT.md, USAGE.md, API_REFERENCE.md, IDA.md)
 
 ## Releasing
 
