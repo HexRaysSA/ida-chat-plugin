@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "claude-agent-sdk",
     "ida-domain",
+    "ida-settings>=3.3.0",
 ]
 
 [project.scripts]

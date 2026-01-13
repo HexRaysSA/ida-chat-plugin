@@ -1208,6 +1208,10 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self._script_count = 0
         self._last_had_error = False
         self._summary_mode = False  # False = detailed, True = summary
+
+        # Set larger minimum width for the panel
+        self.parent.setMinimumWidth(800)
+
         self._create_ui()
 
         # Apply saved auth settings to environment
@@ -1703,7 +1707,17 @@ class IDAChatPlugin(ida_idaapi.plugin_t):
             self.form = IDAChatForm()
             self.form.Show(
                 WIDGET_TITLE,
-                options=ida_kernwin.PluginForm.WOPN_PERSIST
+                options=(
+                    ida_kernwin.PluginForm.WOPN_PERSIST |
+                    ida_kernwin.PluginForm.WOPN_DP_RIGHT |
+                    ida_kernwin.PluginForm.WOPN_DP_SZHINT
+                )
+            )
+            # Dock to the right side panel
+            ida_kernwin.set_dock_pos(
+                WIDGET_TITLE,
+                'IDATopLevelDockArea',
+                ida_kernwin.DP_RIGHT | ida_kernwin.DP_SZHINT
             )
 
     def run(self, arg):
