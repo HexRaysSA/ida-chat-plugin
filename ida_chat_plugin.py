@@ -615,6 +615,7 @@ class ChatInputWidget(QPlainTextEdit):
                     self.message_submitted.emit(text)
                     self.clear()
                     self._history_index = -1
+                    self.setFocus()  # Keep focus on input
         else:
             super().keyPressEvent(event)
 
@@ -1029,6 +1030,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called when agent finishes processing."""
         self._is_processing = False
         self.input_widget.setEnabled(True)
+        self.input_widget.setFocus()
         self.status_label.setText("Ready")
         self.progress_timeline.complete()
         # Mark the last message as complete (green)
