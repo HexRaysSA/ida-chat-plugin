@@ -97,12 +97,23 @@ class IDAChat:
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
 
-    async def stop(self):
+    async def stop(self, save: bool = False):
         """Clean up resources."""
         if self.client:
             await self.client.disconnect()
-        # Note: ida_domain Database doesn't need explicit close in context manager usage
-        # but we opened it directly, so we leave it (it will close on process exit)
+        if self.db and save:
+            print(f"{Colors.CYAN}Saving and packing database...{Colors.RESET}")
+            self.db.save()
+            print(f"{Colors.GREEN}Database saved.{Colors.RESET}")
+
+    def prompt_save_on_exit(self) -> bool:
+        """Ask user if they want to save the database."""
+        print()
+        try:
+            response = input(f"{Colors.YELLOW}Save database before exiting? [y/N]: {Colors.RESET}").strip().lower()
+            return response in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
 
     def execute_script(self, code: str) -> str:
         """Execute an idascript against the open database."""
@@ -177,27 +188,44 @@ class IDAChat:
         # Return script output
         return "\n".join(script_outputs) if script_outputs else ""
 
-    async def run_interactive(self):
-        """Run interactive chat loop."""
-        print("IDA Chat ready. Type 'exit' or 'quit' to leave.")
+    async def run_interactive(self) -> bool:
+        """Run interactive chat loop. Returns True if user wants to save on exit."""
+        print("IDA Chat ready. Type 'exit' or 'quit' to leave. Ctrl+C to exit.")
         print("-" * 40)
+
+        save_on_exit = False
 
         while True:
             try:
                 user_input = input("\nYou: ").strip()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 print("\nGoodbye!")
+                break
+            except KeyboardInterrupt:
+                # Ctrl+C pressed - ask about saving
+                save_on_exit = self.prompt_save_on_exit()
+                print("Goodbye!")
                 break
 
             if not user_input:
                 continue
 
             if user_input.lower() in ("exit", "quit"):
+                save_on_exit = self.prompt_save_on_exit()
                 print("Goodbye!")
                 break
 
-            result = await self.process_message(user_input)
-            print(f"\n{result}")
+            try:
+                result = await self.process_message(user_input)
+                print(f"\n{result}")
+            except KeyboardInterrupt:
+                # Ctrl+C during processing - ask about saving
+                print(f"\n{Colors.YELLOW}[Interrupted]{Colors.RESET}")
+                save_on_exit = self.prompt_save_on_exit()
+                print("Goodbye!")
+                break
+
+        return save_on_exit
 
     async def run_single_prompt(self, prompt: str):
         """Execute a single prompt and exit."""
@@ -221,6 +249,7 @@ async def async_main():
         sys.exit(1)
 
     chat = IDAChat(args.binary, verbose=args.verbose)
+    save_on_exit = False
 
     try:
         await chat.start()
@@ -228,9 +257,13 @@ async def async_main():
         if args.prompt:
             await chat.run_single_prompt(args.prompt)
         else:
-            await chat.run_interactive()
+            save_on_exit = await chat.run_interactive()
+    except KeyboardInterrupt:
+        # Handle Ctrl+C during startup or single prompt
+        save_on_exit = chat.prompt_save_on_exit() if chat.db else False
+        print("Goodbye!")
     finally:
-        await chat.stop()
+        await chat.stop(save=save_on_exit)
 
 
 def main():
