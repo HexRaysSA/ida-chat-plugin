@@ -1,0 +1,80 @@
+name: Release
+
+run-name: Release Version Bump (${{ github.event.inputs.release_type }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Select release type'
+        required: true
+        type: choice
+        options:
+          - release-patch
+          - release-minor
+          - release-major
+        default: 'release-patch'
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_PYTHON: '3.13'
+
+jobs:
+  publish:
+    name: Publish PyPI Package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python with uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python and dependencies
+        run: |
+          uv python install "${{ env.UV_PYTHON }}"
+          uv sync --extra dev
+
+      - name: Bump version
+        id: version
+        run: |
+          uv run task ${{ github.event.inputs.release_type }}
+
+          VERSION=$(uv run task current-version | tail -1)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "Created version: ${VERSION}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to PyPI
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  release:
+    name: Create GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.publish.outputs.tag }}
+          makeLatest: true
+          generateReleaseNotes: true
