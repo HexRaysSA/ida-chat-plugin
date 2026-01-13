@@ -36,6 +36,12 @@ You have access to an open IDA database via the `db` variable.
 When you need to query or analyze the binary, output Python code in <idascript> tags.
 The code will be exec()'d with `db` in scope. Use print() for output.
 
+IMPORTANT: This is an agentic loop. After each <idascript> executes:
+- You will see the output (or any errors) in the next message
+- If there's an error, fix your code and try again
+- Keep working until your task is complete
+- When you're done, respond WITHOUT any <idascript> tags
+
 Example:
 <idascript>
 for i, func in enumerate(db.functions):
@@ -45,7 +51,7 @@ for i, func in enumerate(db.functions):
     print(f"{name}: 0x{func.start_ea:08X}")
 </idascript>
 
-Always wrap analysis code in <idascript> tags. The output from print() will be shown to the user.
+Always wrap analysis code in <idascript> tags. The output from print() will be shown to you and the user.
 """
 
 
@@ -93,6 +99,7 @@ class IDAChatCore:
     """Shared chat backend for CLI and Plugin.
 
     Handles Agent SDK integration, message processing, and script execution.
+    Implements an agentic loop that feeds script results back to the agent.
     Output is delegated to the callback for presentation.
     """
 
@@ -102,6 +109,7 @@ class IDAChatCore:
         callback: ChatCallback,
         script_executor: Callable[[str], str] | None = None,
         verbose: bool = False,
+        max_turns: int = 20,
     ):
         """Initialize the chat core.
 
@@ -112,10 +120,12 @@ class IDAChatCore:
                 default direct execution. Plugin can inject a thread-safe
                 executor that runs on the main thread.
             verbose: If True, report additional stats.
+            max_turns: Maximum agentic turns before stopping (default 20).
         """
         self.db = db
         self.callback = callback
         self.verbose = verbose
+        self.max_turns = max_turns
         self.client: ClaudeSDKClient | None = None
         # Use injected executor or default to direct execution
         self._execute_script = script_executor or self._default_execute_script
@@ -163,23 +173,14 @@ class IDAChatCore:
         finally:
             sys.stdout = old_stdout
 
-    async def process_message(self, user_input: str) -> str:
-        """Send message to agent, process response, execute scripts.
-
-        Args:
-            user_input: The user's message/query.
+    async def _process_single_response(self) -> tuple[list[str], list[str]]:
+        """Process a single agent response.
 
         Returns:
-            Combined script outputs as a string.
+            Tuple of (scripts_found, script_outputs)
         """
-        if not self.client:
-            raise RuntimeError("Client not connected. Call connect() first.")
-
-        self.callback.on_thinking()
-
-        await self.client.query(user_input)
-
         full_text: list[str] = []
+        scripts_found: list[str] = []
         script_outputs: list[str] = []
         first_output = True
 
@@ -212,15 +213,17 @@ class IDAChatCore:
                             self.callback.on_text(cleaned)
 
             elif isinstance(message, ResultMessage):
-                # Execute any scripts found in the response
+                # Extract scripts from the response
                 if full_text:
                     combined = "".join(full_text)
-                    matches = IDASCRIPT_PATTERN.findall(combined)
-                    for script_code in matches:
+                    scripts_found = IDASCRIPT_PATTERN.findall(combined)
+
+                    # Execute each script
+                    for script_code in scripts_found:
                         self.callback.on_script_start()
                         output = self._execute_script(script_code.strip())
+                        script_outputs.append(output)
                         if output:
-                            script_outputs.append(output)
                             self.callback.on_script_output(output)
 
                 if self.verbose:
@@ -229,4 +232,58 @@ class IDAChatCore:
                         message.total_cost_usd
                     )
 
-        return "\n".join(script_outputs) if script_outputs else ""
+        return scripts_found, script_outputs
+
+    async def process_message(self, user_input: str) -> str:
+        """Agentic loop - process message and continue until agent is done.
+
+        The agent will keep working, seeing script outputs and fixing errors,
+        until either:
+        - It responds without any <idascript> tags (task complete)
+        - Maximum turns is reached
+
+        Args:
+            user_input: The user's message/query.
+
+        Returns:
+            Combined script outputs as a string.
+        """
+        if not self.client:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        current_input = user_input
+        all_script_outputs: list[str] = []
+        turn = 0
+
+        while turn < self.max_turns:
+            turn += 1
+            self.callback.on_thinking()
+
+            # Send message to agent
+            await self.client.query(current_input)
+
+            # Process response and execute any scripts
+            scripts_found, script_outputs = await self._process_single_response()
+            all_script_outputs.extend(script_outputs)
+
+            if not scripts_found:
+                # No scripts in response = agent is done
+                break
+
+            # Feed script results back to agent for next turn
+            if script_outputs:
+                # Format all outputs for the agent
+                formatted_outputs = []
+                for i, output in enumerate(script_outputs, 1):
+                    if len(scripts_found) > 1:
+                        formatted_outputs.append(f"Script {i} output:\n{output}")
+                    else:
+                        formatted_outputs.append(output)
+                current_input = "Script output:\n\n" + "\n\n".join(formatted_outputs)
+            else:
+                current_input = "Script executed successfully with no output."
+
+        if turn >= self.max_turns:
+            self.callback.on_error(f"Reached maximum turns ({self.max_turns})")
+
+        return "\n".join(all_script_outputs) if all_script_outputs else ""
