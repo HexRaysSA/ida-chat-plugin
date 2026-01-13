@@ -295,10 +295,9 @@ class IDAChatCore:
 
                         # Log tool use to history
                         if self.history:
-                            self.history.append_message(
-                                "tool_use",
-                                tool_name=block.name,
-                                details=details
+                            self.history.append_tool_use(
+                                block.name,
+                                block.input if isinstance(block.input, dict) else {"input": str(block.input)}
                             )
 
                     elif isinstance(block, TextBlock):
@@ -312,7 +311,7 @@ class IDAChatCore:
                             self.callback.on_text(cleaned)
                             # Log assistant text to history
                             if self.history:
-                                self.history.append_message("assistant", cleaned)
+                                self.history.append_assistant_message(cleaned)
                     else:
                         logger.warning(f"  Unknown block type: {type(block).__name__}")
 
@@ -338,11 +337,7 @@ class IDAChatCore:
 
                         # Log script execution to history
                         if self.history:
-                            self.history.append_message(
-                                "script",
-                                code=code,
-                                output=output
-                            )
+                            self.history.append_script_execution(code, output)
 
                 if self.verbose:
                     self.callback.on_result(
@@ -376,7 +371,7 @@ class IDAChatCore:
 
         # Log user message to history
         if self.history:
-            self.history.append_message("user", user_input)
+            self.history.append_user_message(user_input)
 
         current_input = user_input
         all_script_outputs: list[str] = []
