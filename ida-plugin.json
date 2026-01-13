@@ -4,7 +4,7 @@
     "name": "ida-chat",
     "entryPoint": "ida_chat_plugin.py",
     "version": "1.0.0",
-    "idaVersions": ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0"],
+    "idaVersions": ["9.0", "9.1", "9.2", "9.3"],
     "description": "LLM Chat Client for IDA Pro - A dockable chat interface for AI-powered reverse engineering assistance using Claude Agent SDK.",
     "license": "MIT",
     "categories": ["collaboration-and-productivity", "ui-ux-and-visualization"],
@@ -16,8 +16,8 @@
       "repository": "https://github.com/HexRaysSA/ida-chat-plugin"
     },
     "authors": [{
-      "name": "Pierre-Alexandre Losson",
-      "email": "palosson@hex-rays.com"
+      "name": "Hex-Rays",
+      "email": "support@hex-rays.com"
     }],
     "maintainers": [{
       "name": "Pierre-Alexandre Losson",
