@@ -8,10 +8,14 @@ and message processing used by both the CLI and IDA plugin.
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 from io import StringIO
 from pathlib import Path
 from typing import Callable, Protocol, TYPE_CHECKING
+
+import claude_code_transcripts
 
 if TYPE_CHECKING:
     from ida_chat_history import MessageHistory
@@ -71,6 +75,64 @@ def _load_system_prompt() -> str:
             logger.warning(f"IDA.md not found at {IDA_UI_FILE}")
 
     return prompt
+
+
+def export_transcript(session_file: Path, output_path: Path) -> None:
+    """Export a chat session to HTML files.
+
+    Generates index.html and page-XXX.html files in the same directory as output_path.
+
+    Args:
+        session_file: Path to the JSONL session file.
+        output_path: Path for the main output HTML file (index.html will be renamed to this).
+
+    Raises:
+        FileNotFoundError: If session_file doesn't exist.
+        Exception: If HTML generation fails.
+    """
+    if not session_file.exists():
+        raise FileNotFoundError(f"Session file not found: {session_file}")
+
+    output_dir = output_path.parent
+
+    # Generate into a temp directory, then copy all HTML files
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        claude_code_transcripts.generate_html(session_file, tmp_path)
+
+        # Copy index.html to the target path
+        generated_html = tmp_path / "index.html"
+        if generated_html.exists():
+            shutil.copy2(generated_html, output_path)
+        else:
+            raise RuntimeError("HTML generation failed: index.html not created")
+
+        # Copy all page-XXX.html files
+        for page_file in tmp_path.glob("page-*.html"):
+            shutil.copy2(page_file, output_dir / page_file.name)
+
+    logger.info(f"Exported transcript to {output_path}")
+
+
+def export_transcript_to_dir(session_file: Path, output_dir: Path) -> Path:
+    """Export a chat session to a directory (with all assets).
+
+    Args:
+        session_file: Path to the JSONL session file.
+        output_dir: Directory to generate HTML into.
+
+    Returns:
+        Path to the generated index.html.
+
+    Raises:
+        FileNotFoundError: If session_file doesn't exist.
+    """
+    if not session_file.exists():
+        raise FileNotFoundError(f"Session file not found: {session_file}")
+
+    claude_code_transcripts.generate_html(session_file, output_dir)
+    logger.info(f"Exported transcript to {output_dir}")
+    return output_dir / "index.html"
 
 
 async def test_claude_connection() -> tuple[bool, str]:

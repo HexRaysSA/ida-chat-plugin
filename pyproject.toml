@@ -12,7 +12,7 @@ dependencies = [
     "claude-agent-sdk",
     "ida-domain",
     "ida-settings>=3.3.0",
-    "claude-code-transcripts",
+    "claude-code-log",
 ]
 
 [project.urls]

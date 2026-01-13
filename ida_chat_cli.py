@@ -162,7 +162,7 @@ def run_transcript_command(args: list[str]) -> int:
     """Run the transcript subcommand to generate HTML from sessions."""
     from datetime import datetime
 
-    import claude_code_transcripts
+    from ida_chat_core import export_transcript_to_dir
 
     parser = argparse.ArgumentParser(
         prog="ida-chat transcript",
@@ -316,10 +316,10 @@ def run_transcript_command(args: list[str]) -> int:
     print(f"Generating transcript from: {session_file}")
     print(f"Output directory: {output_dir}")
 
-    claude_code_transcripts.generate_html(session_file, output_dir)
+    index_html = export_transcript_to_dir(session_file, output_dir)
 
     if not parsed.no_open and not parsed.output:
-        index_url = (output_dir / "index.html").resolve().as_uri()
+        index_url = index_html.resolve().as_uri()
         print(f"Opening: {index_url}")
         webbrowser.open(index_url)
 
