@@ -1,6 +1,6 @@
 # IDA Domain Quick Reference
 
-Quick reference for the IDA Domain API. For basic usage, see [SKILL.md](SKILL.md).
+Quick reference for the IDA Domain API
 
 ## Table of Contents
 

@@ -482,8 +482,8 @@ class ChatMessage(QFrame):
                     }}
                 """)
 
-            layout.addWidget(self.message_widget)
-            layout.addStretch()
+            layout.addWidget(self.message_widget, stretch=4)
+            layout.addStretch(1)  # 4:1 ratio = ~80% for message
 
             # Start blinking if processing
             if self._is_processing:

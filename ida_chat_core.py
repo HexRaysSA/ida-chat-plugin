@@ -34,6 +34,7 @@ logger = logging.getLogger("ida-chat")
 from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
+    HookMatcher,
     AssistantMessage,
     TextBlock,
     ToolUseBlock,
@@ -50,6 +51,8 @@ IDASCRIPT_PATTERN = re.compile(r"<idascript>(.*?)</idascript>", re.DOTALL)
 # Prompt file locations
 PROMPT_FILE = PROJECT_DIR / "PROMPT.md"
 IDA_UI_FILE = PROJECT_DIR / "IDA.md"
+USAGE_FILE = PROJECT_DIR / "USAGE.md"
+API_REFERENCE_FILE = PROJECT_DIR / "API_REFERENCE.md"
 
 
 def _load_system_prompt() -> str:
@@ -74,7 +77,40 @@ def _load_system_prompt() -> str:
         else:
             logger.warning(f"IDA.md not found at {IDA_UI_FILE}")
 
+    prompt += "\n\n" + USAGE_FILE.read_text()
+    prompt += "\n\n" + API_REFERENCE_FILE.read_text()
     return prompt
+
+
+async def _restrict_file_access(input_data, tool_use_id, context):
+    """Hook to block file operations outside PROJECT_DIR."""
+    if input_data['hook_event_name'] != 'PreToolUse':
+        return {}
+
+    tool_input = input_data['tool_input']
+
+    # Get the path being accessed (different tools use different param names)
+    file_path = tool_input.get('file_path') or tool_input.get('path') or ''
+
+    if file_path:
+        # Resolve to absolute path
+        resolved = Path(file_path).resolve()
+
+        # Check if it's inside PROJECT_DIR
+        try:
+            resolved.relative_to(PROJECT_DIR)
+        except ValueError:
+            # Path is outside PROJECT_DIR
+            logger.warning(f"Blocked file access outside PROJECT_DIR: {file_path}")
+            return {
+                'hookSpecificOutput': {
+                    'hookEventName': input_data['hook_event_name'],
+                    'permissionDecision': 'deny',
+                    'permissionDecisionReason': f'File access restricted to project directory'
+                }
+            }
+
+    return {}
 
 
 def export_transcript(session_file: Path, output_path: Path) -> None:
@@ -278,6 +314,11 @@ class IDAChatCore:
                 "type": "preset",
                 "preset": "claude_code",
                 "append": _load_system_prompt(),
+            },
+            hooks={
+                'PreToolUse': [
+                    HookMatcher(matcher='Read|Glob|Grep', hooks=[_restrict_file_access])
+                ]
             },
         )
 

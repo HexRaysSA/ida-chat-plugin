@@ -11,7 +11,8 @@
     "pythonDependencies": [
       "claude-agent-sdk",
       "ida-domain",
-      "ida-settings"
+      "ida-settings",
+      "claude-code-transcripts"
     ],
     "urls": {
       "repository": "https://github.com/HexRaysSA/ida-chat-plugin"
@@ -31,7 +32,8 @@
         "type": "boolean",
         "description": "Show the setup wizard on plugin launch",
         "default": true,
-        "required": false
+        "required": false,
+        "prompt": false
       },
       {
         "key": "auth_type",
