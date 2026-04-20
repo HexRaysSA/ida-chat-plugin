@@ -60,6 +60,11 @@ def _load_system_prompt() -> str:
 
     If running inside IDA Pro (IDA_CHAT_INSIDE_IDA env var is set),
     also appends IDA.md which contains the user interaction API.
+
+    Note: API_REFERENCE.md is NOT included here because the combined prompt
+    would exceed Windows' ~32K command-line character limit (it's passed as
+    a --append-system-prompt CLI argument). Instead, the agent is instructed
+    to read API_REFERENCE.md via the Read tool on its first turn.
     """
     prompt = ""
 
@@ -78,7 +83,13 @@ def _load_system_prompt() -> str:
             logger.warning(f"IDA.md not found at {IDA_UI_FILE}")
 
     prompt += "\n\n" + USAGE_FILE.read_text(encoding="utf-8")
-    prompt += "\n\n" + API_REFERENCE_FILE.read_text(encoding="utf-8")
+
+    # Instruct the agent to read the full API reference on its first turn
+    prompt += (
+        "\n\nIMPORTANT: On your FIRST turn, before writing any <idascript>, "
+        "use the Read tool to read `API_REFERENCE.md` and `USAGE.md` in the current directory. "
+        "These contain the complete ida-domain API reference you MUST follow."
+    )
     return prompt
 
 
