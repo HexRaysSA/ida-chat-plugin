@@ -2,7 +2,7 @@
 
 This document describes how to write scripts for the IDA Chat plugin using the ida-domain API.
 
-**For the complete API reference, see [API_REFERENCE.md](API_REFERENCE.md).**
+**For the complete API reference, use the ida MCP `reference` tool.**
 
 ## Overview
 
@@ -167,4 +167,4 @@ Call methods on `db.functions`, not on the func object.
 Wrap string access in try-except blocks.
 
 **When encountering API errors:**
-Check the API_REFERENCE.md for the correct method signatures.
+Use the ida MCP `reference` tool to look up the correct method signatures.
