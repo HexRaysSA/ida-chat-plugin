@@ -26,8 +26,6 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from ida_chat_core import IDAChatCore, ChatCallback
 from ida_chat_history import MessageHistory
 
-from ida_domain import Database
-
 
 # ANSI colors for terminal output
 class Colors:
@@ -54,14 +52,22 @@ class CLICallback(ChatCallback):
         # Clear the thinking indicator
         print("\r" + " " * 15 + "\r", end="")
 
+    def on_thinking_text(self, text: str) -> None:
+        # Extended-thinking/reasoning, dimmed to set it apart from the answer.
+        print(f"{Colors.DIM}{text}{Colors.RESET}")
+
     def on_tool_use(self, tool_name: str, details: str) -> None:
         tool_info = f"{Colors.CYAN}[{tool_name}]{Colors.RESET}"
         if details:
             tool_info += f" {Colors.DIM}{details}{Colors.RESET}"
         print(tool_info)
 
-    def on_text(self, text: str) -> None:
-        self.console.print(Markdown(text))
+    def on_text(self, text: str, is_final: bool = True) -> None:
+        if is_final:
+            self.console.print(Markdown(text))
+        else:
+            # Intermediate narration before a tool call — dimmed.
+            print(f"{Colors.DIM}{text}{Colors.RESET}")
 
     def on_script_code(self, code: str) -> None:
         print(f"{Colors.YELLOW}[Executing script]{Colors.RESET}")
@@ -88,46 +94,35 @@ class IDAChat:
     def __init__(self, binary_path: str, verbose: bool = False):
         self.binary_path = Path(binary_path).resolve()
         self.verbose = verbose
-        self.db = None
         self.core: IDAChatCore | None = None
 
     async def start(self) -> None:
-        """Open database and initialize the agent."""
-        print(f"Opening database: {self.binary_path}")
-        self.db = Database.open(str(self.binary_path))
-        print(f"Database opened: {self.db.module}")
-        print(f"Architecture: {self.db.architecture} {self.db.bitness}-bit")
-        print(f"Functions: {len(self.db.functions)}")
-        print()
+        """Connect the agent. The ida-nexus mcp server owns the database.
+
+        The agent attaches to a running IDA GUI instance for this binary when
+        one is registered, or spins up a managed idalib worker otherwise.
+        """
+        print(f"Target database: {self.binary_path}")
+        print("Connecting to Claude and the IDA Nexus MCP server...")
 
         callback = CLICallback()
-        self.core = IDAChatCore(self.db, callback, verbose=self.verbose)
+        self.core = IDAChatCore(str(self.binary_path), callback, verbose=self.verbose)
         await self.core.connect()
+        print("Ready.\n")
 
-    async def stop(self, save: bool = False) -> None:
-        """Clean up resources."""
+    async def stop(self) -> None:
+        """Clean up resources.
+
+        Disconnecting drops this client's lease on the MCP server; a managed
+        idalib worker saves and exits once its last lease is gone.
+        """
         if self.core:
             await self.core.disconnect()
-        if self.db and save:
-            print(f"{Colors.CYAN}Saving and packing database...{Colors.RESET}")
-            self.db.save()
-            print(f"{Colors.GREEN}Database saved.{Colors.RESET}")
 
-    def prompt_save_on_exit(self) -> bool:
-        """Ask user if they want to save the database."""
-        print()
-        try:
-            response = input(f"{Colors.YELLOW}Save database before exiting? [y/N]: {Colors.RESET}").strip().lower()
-            return response in ("y", "yes")
-        except (EOFError, KeyboardInterrupt):
-            return False
-
-    async def run_interactive(self) -> bool:
-        """Run interactive chat loop. Returns True if user wants to save on exit."""
+    async def run_interactive(self) -> None:
+        """Run interactive chat loop."""
         print("IDA Chat ready. Type 'exit' or 'quit' to leave. Ctrl+C to exit.")
         print("-" * 40)
-
-        save_on_exit = False
 
         while True:
             try:
@@ -136,15 +131,13 @@ class IDAChat:
                 print("\nGoodbye!")
                 break
             except KeyboardInterrupt:
-                save_on_exit = self.prompt_save_on_exit()
-                print("Goodbye!")
+                print("\nGoodbye!")
                 break
 
             if not user_input:
                 continue
 
             if user_input.lower() in ("exit", "quit"):
-                save_on_exit = self.prompt_save_on_exit()
                 print("Goodbye!")
                 break
 
@@ -153,11 +146,8 @@ class IDAChat:
                 print()  # Blank line after response
             except KeyboardInterrupt:
                 print(f"\n{Colors.YELLOW}[Interrupted]{Colors.RESET}")
-                save_on_exit = self.prompt_save_on_exit()
                 print("Goodbye!")
                 break
-
-        return save_on_exit
 
     async def run_single_prompt(self, prompt: str) -> None:
         """Execute a single prompt and exit."""
@@ -347,7 +337,6 @@ async def async_main():
         sys.exit(1)
 
     chat = IDAChat(args.binary, verbose=args.verbose)
-    save_on_exit = False
 
     try:
         await chat.start()
@@ -355,12 +344,11 @@ async def async_main():
         if args.prompt:
             await chat.run_single_prompt(args.prompt)
         else:
-            save_on_exit = await chat.run_interactive()
+            await chat.run_interactive()
     except KeyboardInterrupt:
-        save_on_exit = chat.prompt_save_on_exit() if chat.db else False
         print("Goodbye!")
     finally:
-        await chat.stop(save=save_on_exit)
+        await chat.stop()
 
 
 def main():
